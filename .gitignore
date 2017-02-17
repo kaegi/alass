@@ -1,0 +1,6 @@
+target
+.*
+!.gitignore
+*.ass
+*.srt
+*.svg

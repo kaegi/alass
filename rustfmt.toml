@@ -1,0 +1,9 @@
+write-mode="overwrite"
+reorder_imports = true
+format_strings = false
+chain_overflow_last = false
+chain_indent = "Visual"
+single_line_if_else = true
+same_line_if_else = false
+fn_single_line = false
+max_width = 150

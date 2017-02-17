@@ -1,0 +1,28 @@
+[package]
+name = "aligner"
+version = "0.1.0"
+authors = ["kaegi <kaegi.dev@gmail.com>"]
+description = "Automatically corrects subtitle timings given a second correct subtitle"
+repository = "https://github.com/kaegi/aligner"
+documentation = "https://docs.rs/aligner"
+readme = "README.md"
+keywords = ["subtitle", "aligner", "parser", "automatic", "api"]
+license = "AGPL-3.0"
+
+
+[dependencies]
+arrayvec = "0.3.20"
+
+# dependencies of binary
+clap = "~2.20.0"
+combine = "~2.2.2"
+error-chain = "~0.9.0"
+pbr = "1.0.0-alpha.2"
+
+[[bin]]
+doc = false
+name = "aligner"
+
+
+[dev-dependencies]
+rand = "0.3"
