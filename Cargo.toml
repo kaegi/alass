@@ -7,7 +7,7 @@ repository = "https://github.com/kaegi/aligner"
 documentation = "https://docs.rs/aligner"
 readme = "README.md"
 keywords = ["subtitle", "aligner", "parser", "automatic", "api"]
-license = "AGPL-3.0"
+license = "GPL-3.0"
 
 
 [dependencies]
