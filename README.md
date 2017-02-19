@@ -36,7 +36,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aligner = "~0.1.0"
+aligner = "~0.1.2"
 ```
 
 [Documentation](https://docs.rs/aligner)
