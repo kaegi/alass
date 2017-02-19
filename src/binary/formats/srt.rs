@@ -288,7 +288,7 @@ fn srt_index_line<I>(input: I) -> ParseResult<SubRipFile, I>
 fn srt_block<I>(input: I) -> ParseResult<SubRipFile, I>
     where I: Stream<Item = char>
 {
-    (p(srt_index_line), p(srt_timespan_line), many1(p(non_emptyline)), many1(p(emptyline)))
+    (p(srt_index_line), p(srt_timespan_line), many(p(non_emptyline)), many1(p(emptyline)))
         .map(|(idx, ts, dialog, l): (_, _, Vec<_>, Vec<_>)| SubRipFile::new().append(idx).append(ts).dialog(&dialog).spaces(&l))
         .parse_stream(input)
 }
