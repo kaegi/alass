@@ -22,7 +22,7 @@ use errors::Result as ProgramResult;
 use binary::formats::common::*;
 
 use combine::char::{char, string};
-use combine::combinator::{many, parser as p};
+use combine::combinator::{many, parser as p, eof};
 use combine::primitives::{ParseError, ParseResult, Parser, Stream};
 
 pub struct SrtParser;
@@ -154,8 +154,9 @@ impl SrtParser {
 
     /// Matches a line with a single index.
     fn parse_index_line(line_num: usize, s: &str) -> Result<Vec<SrtFilePart>> {
-        Self::handle_error((many(ws()), p(number_i64), many(ws()))
-                               .map(|(ws1, num, ws2): (_, _, _)| Vec::new().space(ws1).index(num).space(ws2))
+        Self::handle_error((many(ws()), p(number_i64), many(ws()), eof())
+                               .map(|(ws1, num, ws2, ()): (_, _, _, ())| Vec::new().space(ws1).index(num).space(ws2))
+                               .expected("SubRip index")
                                .parse(s),
                            line_num)
     }
@@ -182,7 +183,7 @@ impl SrtParser {
     fn parse_timespan<I>(input: I) -> ParseResult<Vec<SrtFilePart>, I>
         where I: Stream<Item = char>
     {
-        (many(ws()), p(Self::parse_timestamp), many(ws()), string("-->"), many(ws()), p(Self::parse_timestamp), many(ws()))
+        (many(ws()), p(Self::parse_timestamp), many(ws()), string("-->"), many(ws()), p(Self::parse_timestamp), many(ws()), eof())
             .map(|t| Vec::new().space(t.0).begin(t.1).space(t.2).space(t.3.to_string()).space(t.4).end(t.5).space(t.6))
             .expected("SubRip timespan")
             .parse_stream(input)
@@ -326,3 +327,5 @@ impl SubRipFile {
         SubRipFile { v: new_file_parts }
     }
 }
+
+// TODO: parser tests
