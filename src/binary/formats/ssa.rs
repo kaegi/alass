@@ -132,6 +132,8 @@ impl ParseSubtitle for SsaParser {
 impl SsaParser {
     /// Parses a whole `.ssa` file from string.
     fn parse_inner(s: String) -> Result<SsaFile> {
+        // TODO: remove bom
+
         // first we need to find and parse the format line, which then dictates how to parse the file
         let (line_num, field_info_line) = Self::get_format_info(&s)?;
         let fields_info = SsaFieldsInfo::new_from_fields_info_line(line_num, field_info_line)?;

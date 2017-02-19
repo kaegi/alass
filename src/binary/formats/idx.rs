@@ -196,8 +196,9 @@ impl IdxParser {
                 result.push(IdxFilePart::Filler(s2.to_string()));
                 Ok(result)
             })
-            .parse(s.as_str()) // <- return type is ParseResult<(Result<Vec<IdxFilePart>>, &str)>
-            .map_err(|e| ErrorKind::IdxLineParseError(line_num, parse_error_to_string(e)))?.0
+            .parse(s.as_str())
+            .map_err(|e| ErrorKind::IdxLineParseError(line_num, parse_error_to_string(e)))?
+            .0
     }
 
     /// Parse an .idx timestamp like `00:41:36:961`.

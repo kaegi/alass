@@ -28,6 +28,28 @@ use combine::primitives::{ParseError, ParseResult, Parser, Stream};
 type CustomCharParser<I> = Expected<Satisfy<I, fn(char) -> bool>>;
 type NewlineParser<I> = Or<With<Token<I>, Value<I, &'static str>>, With<(Token<I>, Token<I>), Value<I, &'static str>>>;
 
+/// Returns the string without BOMs. Unchanged if string does not start with one.
+pub fn skip_bom(s: &str) -> &str {
+    if s.as_bytes().iter().take(3).eq([0xEF, 0xBB, 0xBF].iter()) {
+        &s[3..]
+    } else if s.as_bytes().iter().take(2).eq([0xFE, 0xFF].iter()) {
+        &s[2..]
+    } else {
+        s
+    }
+}
+
+#[test]
+fn test_skip_bom() {
+    // Rust doesn't seem to let us create a BOM as str in a safe way.
+    assert_eq!(skip_bom(unsafe { ::std::str::from_utf8_unchecked(&[0xEF, 0xBB, 0xBF, 'a' as u8, 'b' as u8, 'c' as u8]) }),
+               "abc");
+    assert_eq!(skip_bom(unsafe { ::std::str::from_utf8_unchecked(&[0xFE, 0xFF, 'd' as u8, 'e' as u8, 'g' as u8]) }),
+               "deg");
+    assert_eq!(skip_bom("bla"), "bla");
+    assert_eq!(skip_bom(""), "");
+}
+
 /// Parses whitespaces and tabs.
 #[inline]
 pub fn ws<I>() -> CustomCharParser<I>
@@ -59,44 +81,6 @@ pub fn no_newl<I>() -> CustomCharParser<I>
     }
     satisfy(f as fn(_) -> _).expected("non-line break character (neither \\n nor \\r)")
 }
-
-/// Parses everything but spaces, tabs, newlines and carriage returns.
-#[inline]
-pub fn no_multispace<I>() -> CustomCharParser<I>
-    where I: Stream<Item = char>
-{
-    fn f(c: char) -> bool {
-        c != '\r' && c != '\n' && c != '\t' && c != ' '
-    }
-    satisfy(f as fn(_) -> _).expected("non-whitespace characters (everything but a space, '\\t', '\\n' or \\r)")
-}
-
-
-/// Matches a srt file (without BOMs etc.)
-pub fn boms<I>() -> Or<Str<I>, Str<I>>
-    where I: Stream<Item = char>
-{
-    or(string("\u{FEFF}"), string("\u{EFBB}\u{BF}"))
-}
-
-/// Matches a block with index, timespan and text (and empty lines).
-pub fn emptyline<I>(input: I) -> ParseResult<String, I>
-    where I: Stream<Item = char>
-{
-    (many(ws()), newl())
-        .map(|t: (_, &str)| [t.0, t.1.to_string()].into_iter().flat_map(|s| s.chars()).collect())
-        .parse_stream(input)
-}
-
-/// Matches a block with index, timespan and text (and empty lines).
-pub fn non_emptyline<I>(input: I) -> ParseResult<String, I>
-    where I: Stream<Item = char>
-{
-    (many(ws()), no_multispace(), many(no_newl()), newl())
-        .map(|t| [t.0, (t.1 as char).to_string(), t.2, t.3.to_string()].into_iter().flat_map(|s| s.chars()).collect())
-        .parse_stream(input)
-}
-
 
 /// Matches a positive or negative intger number.
 pub fn number_i64<I>(input: I) -> ParseResult<i64, I>
@@ -187,7 +171,7 @@ pub fn get_lines_non_destructive(mut s: &str) -> StdResult<Vec<SplittedLine>, Er
 
 #[test]
 fn get_lines_non_destructive_test0() {
-    let lines = ["aaabb", "aaabb\r\nbcccc\n\r\n ", "aaabb\r\nbcccc"];
+    let lines = ["", "aaabb", "aaabb\r\nbcccc\n\r\n ", "aaabb\r\nbcccc"];
     for &full_line in lines.into_iter() {
         let split_line = get_lines_non_destructive(full_line).unwrap();
         let joined: String = split_line.into_iter().flat_map(|(s1, s2)| vec![s1, s2].into_iter()).collect();

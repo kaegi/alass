@@ -16,13 +16,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+use std;
 use {MutableTimedData, ParseSubtitle, TimeDelta, TimePoint, TimeSpan};
 use errors::Result as ProgramResult;
 use binary::formats::common::*;
 
-use combine::char::{char, space as multispace, string};
-use combine::combinator::{eof, many, many1, optional, parser as p, try};
-use combine::primitives::{ParseResult, Parser, State, Stream};
+use combine::char::{char, string};
+use combine::combinator::{many, parser as p};
+use combine::primitives::{ParseError, ParseResult, Parser, Stream};
 
 pub struct SrtParser;
 
@@ -31,26 +32,165 @@ pub struct SrtParser;
 // the other parsers
 error_chain! {
     errors {
+        LineError(line_num: usize, msg: String) {
+            display("parse error at line `{}` because of `{}`", line_num, msg)
+        }
         SrtParseError(msg: String) {
             description(msg)
         }
     }
 }
 
+/// This makes creating a vector with file parts much nicer, shorter and more readable.
+trait ExtendWithSrtFilePart {
+    fn space(self, s: String) -> Self;
+    fn index(self, i: i64) -> Self;
+    fn dialog(self, s: String) -> Self;
+    fn begin(self, t: TimePoint) -> Self;
+    fn end(self, t: TimePoint) -> Self;
+}
+
+impl ExtendWithSrtFilePart for Vec<SrtFilePart> {
+    fn space(mut self, s: String) -> Self {
+        self.push(SrtFilePart::Space(s));
+        self
+    }
+    fn index(mut self, i: i64) -> Self {
+        self.push(SrtFilePart::Index(i));
+        self
+    }
+    fn dialog(mut self, s: String) -> Self {
+        self.push(SrtFilePart::Dialog(s));
+        self
+    }
+    fn begin(mut self, t: TimePoint) -> Self {
+        self.push(SrtFilePart::TimespanBegin(t));
+        self
+    }
+    fn end(mut self, t: TimePoint) -> Self {
+        self.push(SrtFilePart::TimespanEnd(t));
+        self
+    }
+}
+
+
+/// The parsing works as a finite state machine. These are the states in it.
+enum SrtParserState {
+    // emptyline or index follows
+    Emptyline,
+
+    /// timing line follows
+    Index,
+
+    /// dialog or emptyline follows
+    Timing,
+
+    /// emptyline follows
+    Dialog,
+}
 
 impl ParseSubtitle for SrtParser {
     type Result = SubRipFile;
 
     fn parse(s: String) -> ProgramResult<SubRipFile> {
-        let file_opt = p(srt_file).parse(State::new(&s[..]));
+        let file_opt = Self::parse_file(s.as_str());
         match file_opt {
-            Ok(file) => Ok(file.0),
-            Err(err) => {
-                let err2 = Error::from(ErrorKind::SrtParseError(parse_error_to_string(err)));
-                Err(err2.into())
-            }
+            Ok(file) => Ok(SubRipFile::new(file)),
+            Err(err) => Err(err.into()),
         }
 
+    }
+}
+
+impl SrtParser {
+    fn parse_file(mut s: &str) -> Result<Vec<SrtFilePart>> {
+        // remove utf-8 bom
+        s = skip_bom(s);
+
+        let mut result: Vec<SrtFilePart> = Vec::new();
+        let mut state: SrtParserState = SrtParserState::Emptyline; // expect emptyline or index
+        let lines_with_newl: Vec<(String, String)> = get_lines_non_destructive(s)
+            .map_err(|(line_num, err_str)| ErrorKind::LineError(line_num, err_str))?;
+
+        for (line_num, (line, newl)) in lines_with_newl.into_iter().enumerate() {
+            state = match state {
+                SrtParserState::Emptyline => Self::next_state_from_emptyline(&mut result, line_num, line)?,
+                SrtParserState::Index => Self::next_state_from_index(&mut result, line_num, line)?,
+                SrtParserState::Timing | SrtParserState::Dialog => Self::next_state_from_timing_or_dialog(&mut result, line_num, line)?,
+            };
+
+            // we also want to preserve the line break
+            result.push(SrtFilePart::Space(newl));
+        }
+
+        Ok(result)
+    }
+
+    fn next_state_from_emptyline(result: &mut Vec<SrtFilePart>, line_num: usize, line: String) -> Result<SrtParserState> {
+        if line.trim().is_empty() {
+            result.push(SrtFilePart::Space(line));
+            Ok(SrtParserState::Emptyline)
+        } else {
+            result.append(&mut Self::parse_index_line(line_num, line.as_str())?);
+            Ok(SrtParserState::Index)
+        }
+    }
+
+
+    fn next_state_from_index(result: &mut Vec<SrtFilePart>, line_num: usize, line: String) -> Result<SrtParserState> {
+        result.append(&mut Self::parse_timestamp_line(line_num, line.as_str())?);
+        Ok(SrtParserState::Timing)
+    }
+
+    fn next_state_from_timing_or_dialog(result: &mut Vec<SrtFilePart>, _: usize, line: String) -> Result<SrtParserState> {
+        if line.trim().is_empty() {
+            result.push(SrtFilePart::Space(line));
+            Ok(SrtParserState::Emptyline)
+        } else {
+            result.push(SrtFilePart::Dialog(line));
+            Ok(SrtParserState::Dialog)
+        }
+    }
+
+    /// Matches a line with a single index.
+    fn parse_index_line(line_num: usize, s: &str) -> Result<Vec<SrtFilePart>> {
+        Self::handle_error((many(ws()), p(number_i64), many(ws()))
+                               .map(|(ws1, num, ws2): (_, _, _)| Vec::new().space(ws1).index(num).space(ws2))
+                               .parse(s),
+                           line_num)
+    }
+
+    /// Convert a result/error from the combine library to the srt parser error.
+    fn handle_error<T>(r: std::result::Result<(T, &str), ParseError<&str>>, line_num: usize) -> Result<T> {
+        r.map(|(v, _)| v)
+         .map_err(|e| ErrorKind::LineError(line_num, parse_error_to_string(e)).into())
+    }
+
+
+    /// Matches a `SubRip` timestamp like "00:24:45,670"
+    fn parse_timestamp<I>(input: I) -> ParseResult<TimePoint, I>
+        where I: Stream<Item = char>
+    {
+        (p(number_i64), char(':'), p(number_i64), char(':'), p(number_i64), char(','), p(number_i64))
+            .map(|t| TimePoint::from_components(t.0, t.2, t.4, t.6))
+            .expected("SubRip timestamp")
+            .parse_stream(input)
+    }
+
+
+    /// Matches a `SubRip` timespan like "00:24:45,670 --> 00:24:45,680".
+    fn parse_timespan<I>(input: I) -> ParseResult<Vec<SrtFilePart>, I>
+        where I: Stream<Item = char>
+    {
+        (many(ws()), p(Self::parse_timestamp), many(ws()), string("-->"), many(ws()), p(Self::parse_timestamp), many(ws()))
+            .map(|t| Vec::new().space(t.0).begin(t.1).space(t.2).space(t.3.to_string()).space(t.4).end(t.5).space(t.6))
+            .expected("SubRip timespan")
+            .parse_stream(input)
+    }
+
+    /// Matches a `SubRip` timespan line like "00:24:45,670 --> 00:24:45,680".
+    fn parse_timestamp_line(line_num: usize, s: &str) -> Result<Vec<SrtFilePart>> {
+        Self::handle_error(p(Self::parse_timespan).parse(s), line_num)
     }
 }
 
@@ -64,12 +204,10 @@ impl MutableTimedData for SubRipFile {
         }
 
         let mut next_state = SubRipState::FindBegin;
-        let mut result = Vec::new();
-        {
-            // satisfy the borrow checker, so next_state and result are released
-
-            let closure = &mut |part: &SubRipAnnotations| {
-                use self::SubRipAnnotations::*;
+        let result = {
+            // satisfy the borrow checker, so next_state is released
+            let closure = &mut |part: &SrtFilePart| {
+                use self::SrtFilePart::*;
                 match *part {
                     Space(_) | Index(_) | Dialog(_) => {}
                     TimespanBegin(begin) => {
@@ -78,17 +216,19 @@ impl MutableTimedData for SubRipFile {
                     }
                     TimespanEnd(end) => {
                         if let SubRipState::FindEnd(begin) = next_state {
-                            result.push((begin, end));
                             next_state = SubRipState::FindBegin;
+                            return Some((begin, end));
                         } else {
                             // the parser shouldn't be able to construct such a case
                             panic!("expected end of SubRip timespan");
                         }
                     }
                 }
+
+                None
             };
-            self.visit(closure);
-        }
+            self.v.iter().filter_map(closure).collect()
+        };
 
         // every timespan should now consist of a beginning and a end
         assert_eq!(next_state, SubRipState::FindBegin);
@@ -101,54 +241,48 @@ impl MutableTimedData for SubRipFile {
     /// The length of the given iterator should always match the length of
     /// `get_timespans()`.
     fn shift_by_deltas(&self, mut i: &mut Iterator<Item = TimeDelta>) -> ProgramResult<Box<MutableTimedData>> {
-        // Option is necessary because the closure will change to FnOnce we call
-        // "SubRipFile::index(SubRipFile, i64) -> SubRipFile" (moves result); we use
-        // take
-        let mut result_opt = Some(SubRipFile::new());
         let mut current_delta = i.next();
-        self.visit(&mut |part: &SubRipAnnotations| {
-            use self::SubRipAnnotations::*;
-            let result = result_opt.take().unwrap();
-            let new_result = match *part {
-                Space(ref t) => result.space(t.clone()),
-                Dialog(ref t) => result.dialog(&[t.clone()]),
-                Index(i) => result.index(i),
-                TimespanBegin(t) => result.begin(t + current_delta.unwrap()),
+        let shift_closure = |part: &SrtFilePart| {
+            use self::SrtFilePart::*;
+            match *part {
+                ref p @ Space(_) |
+                ref p @ Dialog(_) |
+                ref p @ Index(_) => p.clone(),
+                TimespanBegin(t) => TimespanBegin(t + current_delta.unwrap()),
                 TimespanEnd(t) => {
-                    let new_result = result.end(t + current_delta.unwrap());
+                    let new_result = TimespanEnd(t + current_delta.unwrap());
                     current_delta = i.next();
                     new_result
                 }
-            };
-            result_opt = Some(new_result);
-        });
-        Ok(Box::new(result_opt.unwrap()))
+            }
+        };
+
+        let result: Vec<SrtFilePart> = self.v
+                                           .iter()
+                                           .map(shift_closure)
+                                           .collect();
+        Ok(Box::new(SubRipFile::new(result)))
     }
 
     /// Returns a string in the respective format (.ssa, .srt, etc.) with the
     /// corrected time spans.
     fn to_data_string(&self) -> ProgramResult<String> {
-        let mut result = Vec::<String>::new();
-        self.visit(&mut |part: &SubRipAnnotations| {
-            use self::SubRipAnnotations::*;
+        let closure = &mut |part: &SrtFilePart| {
+            use self::SrtFilePart::*;
             match *part {
-                Space(ref t) | Dialog(ref t) => {
-                    result.push(t.clone());
-                }
-                Index(i) => {
-                    result.push(i.to_string());
-                }
+                Space(ref t) | Dialog(ref t) => t.clone(),
+                Index(i) => i.to_string(),
                 TimespanBegin(t) | TimespanEnd(t) => {
-                    result.push(format!("{:02}:{:02}:{:02},{:03}",
-                                        t.hours(),
-                                        t.mins_comp(),
-                                        t.secs_comp(),
-                                        t.msecs_comp()));
+                    format!("{:02}:{:02}:{:02},{:03}",
+                            t.hours(),
+                            t.mins_comp(),
+                            t.secs_comp(),
+                            t.msecs_comp())
                 }
             }
-        });
+        };
 
-        Ok(result.into_iter().collect())
+        Ok(self.v.iter().map(closure).collect::<String>())
     }
 }
 
@@ -156,7 +290,7 @@ impl MutableTimedData for SubRipFile {
 /// timepan information) and this enum provides the information which
 /// information a segment holds.
 #[derive(Debug, Clone)]
-enum SubRipAnnotations {
+enum SrtFilePart {
     /// Spaces, empty lines, etc.
     Space(String),
 
@@ -175,140 +309,20 @@ enum SubRipAnnotations {
 
 #[derive(Debug, Clone)]
 pub struct SubRipFile {
-    v: Vec<SubRipAnnotations>,
+    v: Vec<SrtFilePart>,
 }
+
 
 impl SubRipFile {
-    fn new() -> SubRipFile {
-        SubRipFile { v: Vec::new() }
-    }
-
-    fn begin(mut self, i: TimePoint) -> SubRipFile {
-        self.v.push(SubRipAnnotations::TimespanBegin(i));
-        self
-    }
-
-    fn end(mut self, i: TimePoint) -> SubRipFile {
-        self.v.push(SubRipAnnotations::TimespanEnd(i));
-        self
-    }
-
-    fn index(mut self, i: i64) -> SubRipFile {
-        self.v.push(SubRipAnnotations::Index(i));
-        self
-    }
-
-    fn dialog(mut self, i: &[String]) -> SubRipFile {
-        let dialog: String = i.into_iter().flat_map(|i| i.chars()).collect();
-        self.v.push(SubRipAnnotations::Dialog(dialog));
-        self
-    }
-
-    fn space(mut self, i: String) -> SubRipFile {
-        let mut changed = false;
-        if let Some(&mut SubRipAnnotations::Space(ref mut last_str)) = self.v.last_mut() {
-            *last_str = (*last_str).clone() + i.as_str();
-            changed = true;
-        }
-        if !changed {
-            self.v.push(SubRipAnnotations::Space(i));
-        }
-        self
-    }
-
-    fn spaces(self, i: &[String]) -> SubRipFile {
-        let space: String = i.into_iter().flat_map(|i| i.chars()).collect();
-        self.space(space)
-    }
-
-    fn append(mut self, mut i: SubRipFile) -> SubRipFile {
-        for t in i.v.drain(..) {
-            match t {
-                SubRipAnnotations::Space(s) => {
-                    self = self.space(s);
-                }
-                s => {
-                    self.v.push(s);
-                }
+    fn new(v: Vec<SrtFilePart>) -> SubRipFile {
+        // cleans up multiple fillers after another
+        let new_file_parts = dedup_string_parts(v, |part: &mut SrtFilePart| {
+            match *part {
+                SrtFilePart::Space(ref mut text) => Some(text),
+                _ => None,
             }
-        }
-        self
+        });
+
+        SubRipFile { v: new_file_parts }
     }
-
-    /// "Visitor pattern": Go through each annotation and leave the computation
-    /// to the caller.
-    fn visit<F: FnMut(&SubRipAnnotations)>(&self, mut f: F) {
-        for a in &self.v {
-            f(a);
-        }
-    }
-}
-
-/// Matches a `SubRip` timestamp like "00:24:45,670"
-fn srt_timestamp<I>(input: I) -> ParseResult<TimePoint, I>
-    where I: Stream<Item = char>
-{
-    (p(number_i64), char(':'), p(number_i64), char(':'), p(number_i64), char(','), p(number_i64))
-        .map(|t| TimePoint::from_components(t.0, t.2, t.4, t.6))
-        .expected("SubRip timestamp")
-        .parse_stream(input)
-}
-
-
-/// Matches a `SubRip` timespan like "00:24:45,670 --> 00:24:45,680".
-fn srt_timespan<I>(input: I) -> ParseResult<SubRipFile, I>
-    where I: Stream<Item = char>
-{
-    (p(srt_timestamp), many(ws()), string("-->"), many(ws()), p(srt_timestamp))
-        .map(|t| SubRipFile::new().begin(t.0).spaces(&[t.1, t.2.to_string(), t.3]).end(t.4))
-        .expected("SubRip timespan")
-        .parse_stream(input)
-}
-
-/// Matches a line with a single index.
-fn srt_timespan_line<I>(input: I) -> ParseResult<SubRipFile, I>
-    where I: Stream<Item = char>
-{
-    (many(ws()), p(srt_timespan), many(ws()), newl())
-        .map(|t: (String, _, String, &str)| SubRipFile::new().space(t.0).append(t.1).spaces(&[t.2, t.3.to_string()]))
-        .parse_stream(input)
-}
-
-/// Matches a line with a single index.
-fn srt_index_line<I>(input: I) -> ParseResult<SubRipFile, I>
-    where I: Stream<Item = char>
-{
-    (many(ws()), p(number_i64), many(ws()), newl())
-        .map(|(ws1, num, ws2, nl): (_, _, _, &str)| SubRipFile::new().space(ws1).index(num).spaces(&[ws2, nl.to_string()]))
-        .parse_stream(input)
-}
-
-
-/// Matches a block with index, timspan text and emptylines.
-fn srt_block<I>(input: I) -> ParseResult<SubRipFile, I>
-    where I: Stream<Item = char>
-{
-    (p(srt_index_line), p(srt_timespan_line), many(p(non_emptyline)), many1(p(emptyline)))
-        .map(|(idx, ts, dialog, l): (_, _, Vec<_>, Vec<_>)| SubRipFile::new().append(idx).append(ts).dialog(&dialog).spaces(&l))
-        .parse_stream(input)
-}
-
-/// Matches a srt file (without BOMs etc.)
-fn srt_file<I>(input: I) -> ParseResult<SubRipFile, I>
-    where I: Stream<Item = char>
-{
-    (optional(boms()), many(multispace()), many1(try(p(srt_block))), many(ws()), eof())
-        .map(|(bom_opt, s1, blocks, s2, _): (Option<&str>, String, Vec<_>, String, _)| {
-            let mut s = SubRipFile::new();
-            if let Some(bom) = bom_opt {
-                s = s.space(bom.to_string());
-            }
-            s = s.space(s1);
-            for r in blocks {
-                s = s.append(r);
-            }
-            s = s.space(s2);
-            s
-        })
-        .parse_stream(input)
 }
