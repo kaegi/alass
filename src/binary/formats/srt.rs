@@ -113,11 +113,14 @@ impl ParseSubtitle for SrtParser {
 }
 
 impl SrtParser {
-    fn parse_file(mut s: &str) -> Result<Vec<SrtFilePart>> {
-        // remove utf-8 bom
-        s = skip_bom(s);
-
+    fn parse_file(i: &str) -> Result<Vec<SrtFilePart>> {
         let mut result: Vec<SrtFilePart> = Vec::new();
+
+        // remove utf-8 bom
+        let (bom, s) = split_bom(i);
+        result = result.space(bom.to_string());
+
+
         let mut state: SrtParserState = SrtParserState::Emptyline; // expect emptyline or index
         let lines_with_newl: Vec<(String, String)> = get_lines_non_destructive(s)
             .map_err(|(line_num, err_str)| ErrorKind::LineParserError(line_num, err_str))?;
@@ -370,6 +373,9 @@ mod tests {
         parse_srt(s3.clone());
         parse_srt(s3.clone() + "\n   ");
         parse_srt(s3.clone() + "\n   \r\n");
+
+        // the bom should be preserved
+        parse_srt(unsafe { ::std::str::from_utf8_unchecked(&[0xFE, 0xFF]) }.to_string());
     }
 }
 // TODO: parser tests

@@ -131,15 +131,17 @@ impl ParseSubtitle for SsaParser {
 
 impl SsaParser {
     /// Parses a whole `.ssa` file from string.
-    fn parse_inner(s: String) -> Result<SsaFile> {
-        // TODO: remove bom
+    fn parse_inner(i: String) -> Result<SsaFile> {
+        let mut file_parts = Vec::new();
+        let (bom, s) = split_bom(&i);
+        file_parts.push(SsaFilePart::Filler(bom.to_string()));
 
         // first we need to find and parse the format line, which then dictates how to parse the file
-        let (line_num, field_info_line) = Self::get_format_info(&s)?;
+        let (line_num, field_info_line) = Self::get_format_info(s)?;
         let fields_info = SsaFieldsInfo::new_from_fields_info_line(line_num, field_info_line)?;
 
         // parse the dialog lines with the given format
-        let file_parts = Self::parse_dialog_lines(&fields_info, &s)?;
+        file_parts.append(&mut Self::parse_dialog_lines(&fields_info, s)?);
         Ok(SsaFile::new(file_parts))
     }
 

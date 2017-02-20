@@ -29,25 +29,30 @@ type CustomCharParser<I> = Expected<Satisfy<I, fn(char) -> bool>>;
 type NewlineParser<I> = Or<With<Token<I>, Value<I, &'static str>>, With<(Token<I>, Token<I>), Value<I, &'static str>>>;
 
 /// Returns the string without BOMs. Unchanged if string does not start with one.
-pub fn skip_bom(s: &str) -> &str {
+pub fn split_bom(s: &str) -> (&str, &str) {
     if s.as_bytes().iter().take(3).eq([0xEF, 0xBB, 0xBF].iter()) {
-        &s[3..]
+        s.split_at(3)
     } else if s.as_bytes().iter().take(2).eq([0xFE, 0xFF].iter()) {
-        &s[2..]
+        s.split_at(2)
     } else {
-        s
+        ("", s)
     }
 }
 
 #[test]
-fn test_skip_bom() {
+fn test_split_bom() {
+    let bom1_vec = &[0xEF, 0xBB, 0xBF];
+    let bom2_vec = &[0xFE, 0xFF];
+    let bom1 = unsafe { ::std::str::from_utf8_unchecked(bom1_vec) };
+    let bom2 = unsafe { ::std::str::from_utf8_unchecked(bom2_vec) };
+
     // Rust doesn't seem to let us create a BOM as str in a safe way.
-    assert_eq!(skip_bom(unsafe { ::std::str::from_utf8_unchecked(&[0xEF, 0xBB, 0xBF, 'a' as u8, 'b' as u8, 'c' as u8]) }),
-               "abc");
-    assert_eq!(skip_bom(unsafe { ::std::str::from_utf8_unchecked(&[0xFE, 0xFF, 'd' as u8, 'e' as u8, 'g' as u8]) }),
-               "deg");
-    assert_eq!(skip_bom("bla"), "bla");
-    assert_eq!(skip_bom(""), "");
+    assert_eq!(split_bom(unsafe { ::std::str::from_utf8_unchecked(&[0xEF, 0xBB, 0xBF, 'a' as u8, 'b' as u8, 'c' as u8]) }),
+               (bom1, "abc"));
+    assert_eq!(split_bom(unsafe { ::std::str::from_utf8_unchecked(&[0xFE, 0xFF, 'd' as u8, 'e' as u8, 'g' as u8]) }),
+               (bom2, "deg"));
+    assert_eq!(split_bom("bla"), ("", "bla"));
+    assert_eq!(split_bom(""), ("", ""));
 }
 
 /// Parses whitespaces and tabs.

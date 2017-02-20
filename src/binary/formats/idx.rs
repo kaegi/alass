@@ -169,8 +169,12 @@ impl ParseSubtitle for IdxParser {
 
 
 impl IdxParser {
-    fn parse_inner(&mut self, s: &str) -> Result<IdxFile> {
+    fn parse_inner(&mut self, i: &str) -> Result<IdxFile> {
+        // remove utf-8 BOM
         let mut result = Vec::new();
+        let (bom, s) = split_bom(&i);
+        result.push(IdxFilePart::Filler(bom.to_string()));
+
         let lines = get_lines_non_destructive(s).map_err(|(line_num, err_str)| ErrorKind::IdxLineParseError(line_num, err_str))?;
         for (line_num, (line, newl)) in lines.into_iter().enumerate() {
             let mut file_parts = self.parse_line(line_num, line)?;
