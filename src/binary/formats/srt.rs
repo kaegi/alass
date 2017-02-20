@@ -23,7 +23,7 @@ use binary::formats::common::*;
 use self::ErrorKind::*;
 
 use combine::char::{char, string};
-use combine::combinator::{many, parser as p, eof};
+use combine::combinator::{eof, many, parser as p};
 use combine::primitives::{ParseError, ParseResult, Parser, Stream};
 
 pub struct SrtParser;
@@ -173,7 +173,9 @@ impl SrtParser {
     }
 
     /// Convert a result/error from the combine library to the srt parser error.
-    fn handle_error<T, F>(r: std::result::Result<(T, &str), ParseError<&str>>, line_num: usize, err_func: F) -> Result<T>  where F: FnOnce() -> self::Error {
+    fn handle_error<T, F>(r: std::result::Result<(T, &str), ParseError<&str>>, line_num: usize, err_func: F) -> Result<T>
+        where F: FnOnce() -> self::Error
+    {
         r.map(|(v, _)| v)
          .map_err(|_| err_func())
          .chain_err(|| Error::from(ErrorAtLine(line_num)))
@@ -201,7 +203,9 @@ impl SrtParser {
 
     /// Matches a `SubRip` timespan line like "00:24:45,670 --> 00:24:45,680".
     fn parse_timestamp_line(line_num: usize, s: &str) -> Result<Vec<SrtFilePart>> {
-        Self::handle_error(p(Self::parse_timespan).parse(s), line_num, || ExpectedTimestampLine(s.to_string()).into())
+        Self::handle_error(p(Self::parse_timespan).parse(s),
+                           line_num,
+                           || ExpectedTimestampLine(s.to_string()).into())
     }
 }
 
@@ -338,4 +342,34 @@ impl SubRipFile {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    fn parse_srt(s: String) {
+        use binary::formats::{MutableTimedData, ParseSubtitle};
+
+        // reconstruct file
+        let srt_file = super::SrtParser::parse(s.clone()).unwrap();
+        let s2 = srt_file.to_data_string().unwrap();
+        assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn parse_srt_test() {
+        // test "normal" file
+        let s1 = "1\n".to_string() + "00:00:31,915 --> 00:00:35,903\r\n" + "♬～\r\n" + "\n" + "2\n" + "00:00:35,903 --> 00:00:44,912\n" + "♬～";
+        parse_srt(s1.clone());
+        parse_srt(s1.clone() + "\n   ");
+        parse_srt(s1.clone() + "\n   \r\n");
+
+        // test "empty" files
+        parse_srt("".to_string());
+        parse_srt("\n".to_string());
+
+        // test file without dialog
+        let s3 = "1\n".to_string() + "00:00:31,915 --> 00:00:35,903\r\n" + "\r\n" + "   \n" + "2\n" + "00:00:35,903 --> 00:00:44,912\n";
+        parse_srt(s3.clone());
+        parse_srt(s3.clone() + "\n   ");
+        parse_srt(s3.clone() + "\n   \r\n");
+    }
+}
 // TODO: parser tests
