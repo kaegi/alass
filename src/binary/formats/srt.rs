@@ -20,6 +20,7 @@ use std;
 use {MutableTimedData, ParseSubtitle, TimeDelta, TimePoint, TimeSpan};
 use errors::Result as ProgramResult;
 use binary::formats::common::*;
+use self::ErrorKind::*;
 
 use combine::char::{char, string};
 use combine::combinator::{many, parser as p, eof};
@@ -32,7 +33,16 @@ pub struct SrtParser;
 // the other parsers
 error_chain! {
     errors {
-        LineError(line_num: usize, msg: String) {
+        ExpectedIndexLine(line: String) {
+            display("expected SubRip index line, found '{}'", line)
+        }
+        ExpectedTimestampLine(line: String) {
+            display("expected SubRip timespan line, found '{}'", line)
+        }
+        ErrorAtLine(line_num: usize) {
+            display("parse error at line `{}`", line_num)
+        }
+        LineParserError(line_num: usize, msg: String) {
             display("parse error at line `{}` because of `{}`", line_num, msg)
         }
         SrtParseError(msg: String) {
@@ -110,7 +120,7 @@ impl SrtParser {
         let mut result: Vec<SrtFilePart> = Vec::new();
         let mut state: SrtParserState = SrtParserState::Emptyline; // expect emptyline or index
         let lines_with_newl: Vec<(String, String)> = get_lines_non_destructive(s)
-            .map_err(|(line_num, err_str)| ErrorKind::LineError(line_num, err_str))?;
+            .map_err(|(line_num, err_str)| ErrorKind::LineParserError(line_num, err_str))?;
 
         for (line_num, (line, newl)) in lines_with_newl.into_iter().enumerate() {
             state = match state {
@@ -158,13 +168,15 @@ impl SrtParser {
                                .map(|(ws1, num, ws2, ()): (_, _, _, ())| Vec::new().space(ws1).index(num).space(ws2))
                                .expected("SubRip index")
                                .parse(s),
-                           line_num)
+                           line_num,
+                           || ErrorKind::ExpectedIndexLine(s.to_string()).into())
     }
 
     /// Convert a result/error from the combine library to the srt parser error.
-    fn handle_error<T>(r: std::result::Result<(T, &str), ParseError<&str>>, line_num: usize) -> Result<T> {
+    fn handle_error<T, F>(r: std::result::Result<(T, &str), ParseError<&str>>, line_num: usize, err_func: F) -> Result<T>  where F: FnOnce() -> self::Error {
         r.map(|(v, _)| v)
-         .map_err(|e| ErrorKind::LineError(line_num, parse_error_to_string(e)).into())
+         .map_err(|_| err_func())
+         .chain_err(|| Error::from(ErrorAtLine(line_num)))
     }
 
 
@@ -174,7 +186,6 @@ impl SrtParser {
     {
         (p(number_i64), char(':'), p(number_i64), char(':'), p(number_i64), char(','), p(number_i64))
             .map(|t| TimePoint::from_components(t.0, t.2, t.4, t.6))
-            .expected("SubRip timestamp")
             .parse_stream(input)
     }
 
@@ -185,13 +196,12 @@ impl SrtParser {
     {
         (many(ws()), p(Self::parse_timestamp), many(ws()), string("-->"), many(ws()), p(Self::parse_timestamp), many(ws()), eof())
             .map(|t| Vec::new().space(t.0).begin(t.1).space(t.2).space(t.3.to_string()).space(t.4).end(t.5).space(t.6))
-            .expected("SubRip timespan")
             .parse_stream(input)
     }
 
     /// Matches a `SubRip` timespan line like "00:24:45,670 --> 00:24:45,680".
     fn parse_timestamp_line(line_num: usize, s: &str) -> Result<Vec<SrtFilePart>> {
-        Self::handle_error(p(Self::parse_timespan).parse(s), line_num)
+        Self::handle_error(p(Self::parse_timespan).parse(s), line_num, || ExpectedTimestampLine(s.to_string()).into())
     }
 }
 
