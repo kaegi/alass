@@ -3,7 +3,7 @@ name = "aligner"
 version = "0.1.3"
 dependencies = [
  "arrayvec 0.3.20 (registry+https://github.com/rust-lang/crates.io-index)",
- "clap 2.20.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "clap 2.20.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "combine 2.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "error-chain 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pbr 1.0.0-alpha.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -64,7 +64,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "clap"
-version = "2.20.4"
+version = "2.20.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "ansi_term 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -222,7 +222,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum backtrace-sys 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)" = "d192fd129132fbc97497c1f2ec2c2c5174e376b95f535199ef4fe0a293d33842"
 "checksum bitflags 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)" = "aad18937a628ec6abcd26d1489012cc0e18c21798210f491af69ded9b881106d"
 "checksum cfg-if 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "de1e760d7b6535af4241fca8bd8adf68e2e7edacc6b29f5d399050c5e48cf88c"
-"checksum clap 2.20.4 (registry+https://github.com/rust-lang/crates.io-index)" = "a60af5cb867dd4ee2378398acde80c73b466b58a963f598061ce7e394800998d"
+"checksum clap 2.20.5 (registry+https://github.com/rust-lang/crates.io-index)" = "7db281b0520e97fbd15cd615dcd8f8bcad0c26f5f7d5effe705f090f39e9a758"
 "checksum combine 2.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "ef03b8ad0f1a6d5f93a05c83e83d33ee2f56b141cc159c29683dbc1418253668"
 "checksum dbghelp-sys 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "97590ba53bcb8ac28279161ca943a924d1fd4a8fb3fa63302591647c4fc5b850"
 "checksum error-chain 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e92ecf0a508c8e074c0e6fa8fe0fa38414848ad4dfc4db6f74c5e9753330b248"
