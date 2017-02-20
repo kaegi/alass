@@ -1,6 +1,6 @@
 [package]
 name = "aligner"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["kaegi <kaegi.dev@gmail.com>"]
 description = "Automatically corrects subtitle timings given a second correct subtitle"
 repository = "https://github.com/kaegi/aligner"
