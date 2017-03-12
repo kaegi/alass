@@ -1,6 +1,6 @@
 [root]
 name = "aligner"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "arrayvec 0.3.20 (registry+https://github.com/rust-lang/crates.io-index)",
  "clap 2.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
