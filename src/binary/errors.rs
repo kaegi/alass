@@ -15,8 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
-use binary::formats;
+use subparse;
 
 // see https://docs.rs/error-chain/0.8.1/error_chain/
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -26,9 +25,7 @@ error_chain! {
     }
 
     links {
-        SsaError(formats::ssa::Error, formats::ssa::ErrorKind);
-        IdxError(formats::idx::Error, formats::idx::ErrorKind);
-        SrtError(formats::srt::Error, formats::srt::ErrorKind);
+        SubparseError(subparse::errors::Error, subparse::errors::ErrorKind);
     }
 
     errors {
@@ -37,10 +34,6 @@ error_chain! {
         }
         SsaFormattingInfoNotFound {
             description("file did not have a `[Events]` section containing a line beginning with `Format: `")
-        }
-
-        UnknownFileFormat {
-            description("unknown file format, only SubRip (.srt), SubStationAlpha (.ssa/.ass) and VobSub (.idx) are supported at the moment")
         }
         ArgumentParseError(argument_name: &'static str, s: String) {
             display("command line argument '{}' could not be parsed from string '{}'", argument_name, s)
