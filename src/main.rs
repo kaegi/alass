@@ -211,7 +211,7 @@ fn run() -> Result<()> {
             .long("sub-fps-reference")
             .value_name("floating-point number in frames-per-second")
             .default_value("30")
-            .help("Specify the frames-per-second for the accompanying video of MicroDVD `.sub` files (they store the timings in frame numbers). Does not affect anything except loading of the reference  `.sub` files."))
+            .help("Specify the frames-per-second for the accompanying video of MicroDVD `.sub` files (they store the timings in frame numbers). Does not affect anything except loading of the reference `.sub` files."))
         .arg(Arg::with_name("sub-fps-incorrect")
             .long("sub-fps-incorrect")
             .value_name("floating-point number in frames-per-second")
