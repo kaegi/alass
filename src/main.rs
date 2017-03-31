@@ -45,7 +45,7 @@ pub use binary::errors::*;
 pub use binary::errors::ErrorKind::*;
 
 // subparse
-use subparse::{SubtitleEntry, SubtitleFormat, get_subtitle_format_by_ending_err, parse_file_from_string};
+use subparse::{SubtitleEntry, SubtitleFormat, get_subtitle_format_err, parse_bytes};
 use subparse::timetypes::*;
 
 #[derive(Default)]
@@ -65,11 +65,11 @@ impl ProgressHandler for ProgressInfo {
     }
 }
 
-fn read_file_to_string(path: &str) -> Result<String> {
+fn read_file_to_bytes(path: &str) -> Result<Vec<u8>> {
     let mut file = File::open(path).map_err(|e| Error::from(Io(e))).chain_err(|| FileOperation(path.to_string()))?;
-    let mut s = String::new();
-    file.read_to_string(&mut s).map_err(|e| Error::from(Io(e))).chain_err(|| FileOperation(path.to_string()))?;
-    Ok(s)
+    let mut v = Vec::new();
+    file.read_to_end(&mut v).map_err(|e| Error::from(Io(e))).chain_err(|| FileOperation(path.to_string()))?;
+    Ok(v)
 }
 
 fn write_data_to_file(path: &str, d: Vec<u8>) -> Result<()> {
@@ -166,6 +166,18 @@ fn perror<'a, T: Into<std::borrow::Cow<'a, str>>>(s: T) {
     println!("EE: {}", s.into());
 }
 
+/// Does reading, parsing and nice error handling for a f64 clap parameter.
+fn unpack_clap_number_f64(matches: &clap::ArgMatches, parameter_name: &'static str) -> Result<f64> {
+    let paramter_value_str: &str = matches.value_of(parameter_name).unwrap();
+    FromStr::from_str(paramter_value_str).chain_err(|| ArgumentParseError(parameter_name, paramter_value_str.to_string()))
+}
+
+/// Does reading, parsing and nice error handling for a f64 clap parameter.
+fn unpack_clap_number_i64(matches: &clap::ArgMatches, parameter_name: &'static str) -> Result<i64> {
+    let paramter_value_str: &str = matches.value_of(parameter_name).unwrap();
+    FromStr::from_str(paramter_value_str).chain_err(|| ArgumentParseError(parameter_name, paramter_value_str.to_string()))
+}
+
 fn run() -> Result<()> {
     let matches = App::new(PKG_NAME.unwrap_or("unkown (not compiled with cargo)"))
         .version(PKG_VERSION.unwrap_or("unknown (not compiled with cargo)"))
@@ -195,37 +207,48 @@ fn run() -> Result<()> {
             .short("n")
             .long("allow-negative-timestamps")
             .help("Negative timestamps can lead to problems with the output file, so by default 0 will be written instead. This option allows you to disable this behavior."))
-        .after_help("This program works with .srt, .ass/.ssa and .idx files. The corrected file will have the same format as the incorrect file.")
+        .arg(Arg::with_name("sub-fps-reference")
+            .long("sub-fps-reference")
+            .value_name("floating-point number in frames-per-second")
+            .default_value("30")
+            .help("Specify the frames-per-second for the accompanying video of MicroDVD `.sub` files (they store the timings in frame numbers). Does not affect anything except loading of the reference  `.sub` files."))
+        .arg(Arg::with_name("sub-fps-incorrect")
+            .long("sub-fps-incorrect")
+            .value_name("floating-point number in frames-per-second")
+            .default_value("30")
+            .help("The same as `sub-fps-reference`, just for the incorrect subtitle file."))
+        .after_help("This program works with .srt, .ass/.ssa, .idx and .sub files. The corrected file will have the same format as the incorrect file.")
         .get_matches();
 
     let incorrect_file_path = matches.value_of("incorrect-sub-file").unwrap();
     let reference_file_path = matches.value_of("reference-sub-file").unwrap();
     let output_file_path = matches.value_of("output-file-path").unwrap();
 
-    let interval_str: &str = matches.value_of("interval").unwrap();
-    let interval: i64 = FromStr::from_str(interval_str).chain_err(|| ArgumentParseError("interval", interval_str.to_string()))?;
+    let interval: i64 = unpack_clap_number_i64(&matches, "interval")?;
     if interval < 1 {
         return Err(Error::from(ExpectedPositiveNumber(interval))).chain_err(|| Error::from(InvalidArgument("interval")));
     }
 
-    let split_penalty_str: &str = matches.value_of("split-penalty").unwrap();
-    let split_penalty: f64 = FromStr::from_str(split_penalty_str).chain_err(|| ArgumentParseError("split-penalty", split_penalty_str.to_string()))?;
+    let split_penalty: f64 = unpack_clap_number_f64(&matches, "split-penalty")?;
     if split_penalty < 0.0 || split_penalty > 100.0 {
         return Err(Error::from(ValueNotInRange(split_penalty, 0.0, 100.0))).chain_err(|| Error::from(InvalidArgument("split-penalty")));
     }
 
+    let sub_fps_ref: f64 = unpack_clap_number_f64(&matches, "sub-fps-reference")?;
+    let sub_fps_inc: f64 = unpack_clap_number_f64(&matches, "sub-fps-incorrect")?;
+
     let allow_negative_timestamps = matches.is_present("allow-negative-timestamps");
 
 
-    let reference_sub_string = read_file_to_string(reference_file_path)?;
-    let incorrect_sub_string = read_file_to_string(incorrect_file_path)?;
+    let reference_sub_data = read_file_to_bytes(reference_file_path)?;
+    let incorrect_sub_data = read_file_to_bytes(incorrect_file_path)?;
 
-    let incorrect_file_format = get_subtitle_format_by_ending_err(incorrect_file_path)
-        .chain_err(|| ErrorKind::FileOperation(incorrect_file_path.to_string()))?;
-    let reference_file_format = get_subtitle_format_by_ending_err(reference_file_path)
+    let reference_file_format = get_subtitle_format_err(reference_file_path, &reference_sub_data)
         .chain_err(|| ErrorKind::FileOperation(reference_file_path.to_string()))?;
-    let output_file_format = get_subtitle_format_by_ending_err(output_file_path)
-        .chain_err(|| ErrorKind::FileOperation(output_file_path.to_string()))?;
+    let incorrect_file_format = get_subtitle_format_err(incorrect_file_path, &incorrect_sub_data)
+        .chain_err(|| ErrorKind::FileOperation(incorrect_file_path.to_string()))?;
+    let output_file_format = get_subtitle_format_err(output_file_path, &incorrect_sub_data)
+        .chain_err(|| ErrorKind::FileOperation(output_file_path.to_string()))?; // HACK: to hint the right output format, the input data is provided
 
     // this program internally stores the files in a non-destructable way (so
     // formatting is preserved) but has no abilty to convert between formats
@@ -235,9 +258,9 @@ fn run() -> Result<()> {
                 .into());
     }
 
-    let timed_reference_file = parse_file_from_string(reference_file_format, reference_sub_string.clone())
+    let timed_reference_file = parse_bytes(reference_file_format, &reference_sub_data, sub_fps_inc)
         .chain_err(|| FileOperation(reference_file_path.to_string()))?;
-    let timed_incorrect_file = parse_file_from_string(incorrect_file_format, incorrect_sub_string.clone())
+    let timed_incorrect_file = parse_bytes(incorrect_file_format, &incorrect_sub_data, sub_fps_ref)
         .chain_err(|| FileOperation(incorrect_file_path.to_string()))?;
 
     let timings_reference = corrected_timings(timed_reference_file.get_subtitle_entries()?.into_iter().map(|subentry| subentry.timespan).collect());

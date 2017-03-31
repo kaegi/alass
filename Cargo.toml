@@ -17,7 +17,7 @@ arrayvec = "0.3.20"
 clap = "~2.21.1"
 error-chain = "~0.10.0"
 pbr = "1.0.0-alpha.2"
-subparse = "~0.1.0"
+subparse = "~0.2.0"
 
 [[bin]]
 doc = false
