@@ -695,12 +695,12 @@ impl<I1, I2, K1, K2> Iterator for CombinedSegmentIterator<I1, I2, K1, K2>
 }
 
 #[derive(Clone, Copy)]
-pub enum DummySegment<K: Segment> {
-    DummySegment(u64),
-    Segment(K),
+pub enum OptionSegment<K: Segment> {
+    NoneSeg(u64),
+    SomeSeg(K),
 }
 
-impl<K> Segment for DummySegment<K>
+impl<K> Segment for OptionSegment<K>
     where K: Segment
 {
     type Item = Option<K::Item>;
@@ -708,16 +708,16 @@ impl<K> Segment for DummySegment<K>
     #[inline]
     fn len(self) -> u64 {
         match self {
-            DummySegment::DummySegment(len) => len,
-            DummySegment::Segment(seg) => seg.len(),
+            OptionSegment::NoneSeg(len) => len,
+            OptionSegment::SomeSeg(seg) => seg.len(),
         }
     }
 
     #[inline]
     fn split_from(self, start_index: u64, len: u64) -> Option<K::Item> {
         match self {
-            DummySegment::DummySegment(_) => None,
-            DummySegment::Segment(seg) => Some(seg.split_from(start_index, len)),
+            OptionSegment::NoneSeg(_) => None,
+            OptionSegment::SomeSeg(seg) => Some(seg.split_from(start_index, len)),
         }
     }
 }

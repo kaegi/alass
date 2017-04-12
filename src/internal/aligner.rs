@@ -16,7 +16,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-use internal::{CombinedSegmentIterator, DeltaBufferBuilder, DeltaBufferReader, DeltaSegment, DummySegment, Rating, RatingBuffer, RatingSegment,
+use internal::{CombinedSegmentIterator, DeltaBufferBuilder, DeltaBufferReader, DeltaSegment, OptionSegment, Rating, RatingBuffer, RatingSegment,
                TimeDelta, TimePoint, TimeSpan, TimepointBuffer, get_best_rating_segments_of_2, get_best_rating_segments_of_3,
                get_overlapping_rating_changepoints};
 use arrayvec::ArrayVec;
@@ -250,7 +250,7 @@ impl Aligner {
                                 get_maxrat_segments: F)
                                 -> (RatingBuffer, TimepointBuffer)
         where I1: Iterator<Item = RatingSegment>,
-              I2: Iterator<Item = DummySegment<RatingSegment>>,
+              I2: Iterator<Item = OptionSegment<RatingSegment>>,
 
               // The three rating segemnts are the "reposition rating" the "fixed rating" and the "nosplit rating".
               //
@@ -333,7 +333,7 @@ impl Aligner {
     fn get_next_lane_without_nosplit(&self, reposition_rating_buffer: &RatingBuffer) -> (RatingBuffer, TimepointBuffer) {
         self.get_next_lane(TimeDelta::zero(), // ignored
                            reposition_rating_buffer.iter_segments().cloned(),
-                           once(DummySegment::DummySegment::<RatingSegment>(self.get_buffer_length())),
+                           once(OptionSegment::NoneSeg::<RatingSegment>(self.get_buffer_length())),
 
                            // do not compare with nosplit segment
                            Self::get_segments_and_choices_with_nosplit)
@@ -400,8 +400,8 @@ impl Aligner {
         // to "rating_by_repositioning[x - space_to_next] + bonus_time".
         // This is the rating for a nosplit alignment. To achive that "x -
         // space_to_next" we add a dummy segment to the front.
-        let dummy_segment = DummySegment::DummySegment(optimal_startdiff.into());
-        let bonus_segments_iter = reposition_rating_buffer.iter_segments().map(|&x| DummySegment::Segment(x + self.nosplit_bonus));
+        let dummy_segment = OptionSegment::NoneSeg(optimal_startdiff.into());
+        let bonus_segments_iter = reposition_rating_buffer.iter_segments().map(|&x| OptionSegment::SomeSeg(x + self.nosplit_bonus));
         let shifted_bonus_segments_iter = once(dummy_segment).chain(bonus_segments_iter);
 
         self.get_next_lane(optimal_startdiff,
