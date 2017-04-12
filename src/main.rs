@@ -30,12 +30,13 @@ const PKG_NAME: Option<&'static str> = option_env!("CARGO_PKG_NAME");
 const PKG_DESCRIPTION: Option<&'static str> = option_env!("CARGO_PKG_DESCRIPTION");
 
 // Alg* stands for algorithm (the internal aligner algorithm types)
+
 use aligner::{ProgressHandler, TimeDelta as AlgTimeDelta, TimePoint as AlgTimePoint, TimeSpan as AlgTimeSpan, align};
 use clap::{App, Arg};
 use pbr::ProgressBar;
+use std::cmp::{max, min};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::cmp::{max, min};
 use std::str::FromStr;
 
 mod binary;
@@ -61,19 +62,28 @@ impl ProgressHandler for ProgressInfo {
         self.progress_bar.as_mut().unwrap().inc();
     }
     fn finish(&mut self) {
-        self.progress_bar.as_mut().unwrap().finish_println("\n");
+        self.progress_bar
+            .as_mut()
+            .unwrap()
+            .finish_println("\n");
     }
 }
 
 fn read_file_to_bytes(path: &str) -> Result<Vec<u8>> {
-    let mut file = File::open(path).map_err(|e| Error::from(Io(e))).chain_err(|| FileOperation(path.to_string()))?;
+    let mut file = File::open(path)
+        .map_err(|e| Error::from(Io(e)))
+        .chain_err(|| FileOperation(path.to_string()))?;
     let mut v = Vec::new();
-    file.read_to_end(&mut v).map_err(|e| Error::from(Io(e))).chain_err(|| FileOperation(path.to_string()))?;
+    file.read_to_end(&mut v)
+        .map_err(|e| Error::from(Io(e)))
+        .chain_err(|| FileOperation(path.to_string()))?;
     Ok(v)
 }
 
 fn write_data_to_file(path: &str, d: Vec<u8>) -> Result<()> {
-    let mut file = File::create(path).map_err(|e| Error::from(Io(e))).chain_err(|| FileOperation(path.to_string()))?;
+    let mut file = File::create(path)
+        .map_err(|e| Error::from(Io(e)))
+        .chain_err(|| FileOperation(path.to_string()))?;
     file.write_all(&d)
         .map_err(|e| Error::from(Io(e)))
         .chain_err(|| FileOperation(path.to_string()))?;
@@ -95,13 +105,16 @@ fn timings_to_alg_timespans(v: &[TimeSpan], interval: i64) -> Vec<AlgTimeSpan> {
     v.iter()
      .cloned()
      .map(|timespan| {
-         AlgTimeSpan::new_safe(timing_to_alg_timepoint(timespan.start, interval),
-                               timing_to_alg_timepoint(timespan.end, interval))
-     })
+              AlgTimeSpan::new_safe(timing_to_alg_timepoint(timespan.start, interval),
+                                    timing_to_alg_timepoint(timespan.end, interval))
+          })
      .collect()
 }
 fn alg_deltas_to_timing_deltas(v: &[AlgTimeDelta], interval: i64) -> Vec<TimeDelta> {
-    v.iter().cloned().map(|x| alg_delta_to_delta(x, interval)).collect()
+    v.iter()
+     .cloned()
+     .map(|x| alg_delta_to_delta(x, interval))
+     .collect()
 }
 
 /// Groups consecutive timespans with the same delta together.
@@ -136,9 +149,9 @@ fn get_subtitle_delta_groups(mut v: Vec<(AlgTimeDelta, TimeSpan)>) -> Vec<(AlgTi
 fn corrected_timings(v: Vec<TimeSpan>) -> Vec<TimeSpan> {
     v.into_iter()
      .map(|timespan| {
-         TimeSpan::new(min(timespan.start, timespan.end),
-                       max(timespan.start, timespan.end))
-     })
+              TimeSpan::new(min(timespan.start, timespan.end),
+                            max(timespan.start, timespan.end))
+          })
      .collect()
 }
 
@@ -147,7 +160,11 @@ fn corrected_timings(v: Vec<TimeSpan>) -> Vec<TimeSpan> {
 fn get_truncated_deltas(timespans: &[TimeSpan], deltas: Vec<TimeDelta>) -> Vec<TimeDelta> {
     deltas.into_iter()
           .zip(timespans.iter().cloned())
-          .map(|(delta, timespan)| if (delta + timespan.start).is_negative() { TimePoint::from_msecs(0) - timespan.start } else { delta })
+          .map(|(delta, timespan)| if (delta + timespan.start).is_negative() {
+                   TimePoint::from_msecs(0) - timespan.start
+               } else {
+                   delta
+               })
           .collect()
 }
 
@@ -255,7 +272,7 @@ fn run() -> Result<()> {
     if incorrect_file_format != output_file_format {
         return Err(DifferentOutputFormat(incorrect_file_path.to_string(),
                                          output_file_path.to_string())
-                .into());
+                       .into());
     }
 
     let timed_reference_file = parse_bytes(reference_file_format, &reference_sub_data, sub_fps_inc)
@@ -263,8 +280,14 @@ fn run() -> Result<()> {
     let timed_incorrect_file = parse_bytes(incorrect_file_format, &incorrect_sub_data, sub_fps_ref)
         .chain_err(|| FileOperation(incorrect_file_path.to_string()))?;
 
-    let timings_reference = corrected_timings(timed_reference_file.get_subtitle_entries()?.into_iter().map(|subentry| subentry.timespan).collect());
-    let timings_incorrect = corrected_timings(timed_incorrect_file.get_subtitle_entries()?.into_iter().map(|subentry| subentry.timespan).collect());
+    let timings_reference = corrected_timings(timed_reference_file.get_subtitle_entries()?
+                                                                  .into_iter()
+                                                                  .map(|subentry| subentry.timespan)
+                                                                  .collect());
+    let timings_incorrect = corrected_timings(timed_incorrect_file.get_subtitle_entries()?
+                                                                  .into_iter()
+                                                                  .map(|subentry| subentry.timespan)
+                                                                  .collect());
 
     let alg_reference_timespans = timings_to_alg_timespans(&timings_reference, interval);
     let alg_incorrect_timespans = timings_to_alg_timespans(&timings_incorrect, interval);
@@ -276,19 +299,25 @@ fn run() -> Result<()> {
     let mut deltas = alg_deltas_to_timing_deltas(&alg_deltas, interval);
 
     // list of original subtitles lines which have the same timings
-    let shift_groups: Vec<(AlgTimeDelta, Vec<TimeSpan>)> = get_subtitle_delta_groups(alg_deltas.iter()
-                                                                                               .cloned()
-                                                                                               .zip(timings_incorrect.iter().cloned())
-                                                                                               .collect());
+    let shift_groups: Vec<(AlgTimeDelta, Vec<TimeSpan>)> =
+        get_subtitle_delta_groups(alg_deltas.iter()
+                                            .cloned()
+                                            .zip(timings_incorrect.iter().cloned())
+                                            .collect());
 
     for (shift_group_delta, shift_group_lines) in shift_groups {
         // computes the first and last timestamp for all lines with that delta
         // -> that way we can provide the user with an information like
         //     "100 subtitles with 10min length"
-        let min_max_opt = shift_group_lines.iter().fold(None, |last_opt, subline| {
+        let min_max_opt = shift_group_lines.iter()
+                                           .fold(None, |last_opt, subline| {
             let new_min = subline.start;
             let new_max = subline.end;
-            if let Some((last_min, last_max)) = last_opt { Some((min(last_min, new_min), max(last_max, new_max))) } else { Some((new_min, new_max)) }
+            if let Some((last_min, last_max)) = last_opt {
+                Some((min(last_min, new_min), max(last_max, new_max)))
+            } else {
+                Some((new_min, new_max))
+            }
         });
 
         let (min, max) = match min_max_opt {
@@ -312,7 +341,9 @@ fn run() -> Result<()> {
         pwarning("file with incorrect subtitles has no lines");
     }
 
-    let writing_negative_timespans = deltas.iter().zip(timings_incorrect.iter()).any(|(&delta, &timespan)| (delta + timespan.start).is_negative());
+    let writing_negative_timespans = deltas.iter()
+                                           .zip(timings_incorrect.iter())
+                                           .any(|(&delta, &timespan)| (delta + timespan.start).is_negative());
     if writing_negative_timespans {
         println!("");
         pwarning("some subtitles now have negative timings, which can cause invalid subtitle files");
@@ -332,10 +363,11 @@ fn run() -> Result<()> {
     }
 
     // incorrect file -> correct file
-    let shifted_timespans: Vec<SubtitleEntry> = timings_incorrect.iter()
-                                                                 .zip(deltas.iter())
-                                                                 .map(|(&timespan, &delta)| SubtitleEntry::from(timespan + delta))
-                                                                 .collect();
+    let shifted_timespans: Vec<SubtitleEntry> =
+        timings_incorrect.iter()
+                         .zip(deltas.iter())
+                         .map(|(&timespan, &delta)| SubtitleEntry::from(timespan + delta))
+                         .collect();
 
     // write corrected files
     let mut correct_file = timed_incorrect_file.clone();

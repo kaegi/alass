@@ -19,10 +19,10 @@
 use internal::{Rating, TimeDelta, TimePoint};
 
 use std::fmt::Display;
-use std::ops::Add;
-use std::ops::{Mul, Sub};
-use std::slice::Iter;
 use std::iter::Peekable;
+use std::ops::{Mul, Sub};
+use std::ops::Add;
+use std::slice::Iter;
 
 pub type TimepointBuffer = DeltaBuffer<TimePoint, TimeDelta>;
 pub type RatingBuffer = DeltaBuffer<Rating, Rating>;
@@ -226,11 +226,15 @@ impl<T, D> DeltaBuffer<T, D>
     }
 
     pub fn first_value(&self) -> Option<T> {
-        self.data.first().map(|&first_segment| first_segment.first_value())
+        self.data
+            .first()
+            .map(|&first_segment| first_segment.first_value())
     }
 
     pub fn last_value(&self) -> Option<T> {
-        self.data.last().map(|&last_segment| last_segment.last_value())
+        self.data
+            .last()
+            .map(|&last_segment| last_segment.last_value())
     }
 
     pub fn extended_front(&self, seg: DeltaSegment<T, D>) -> DeltaBuffer<T, D> {
@@ -330,7 +334,7 @@ impl<T, D> DeltaBuffer<T, D>
                                 segments.first_value(),
                                 segments.delta(),
                                 segments.len())
-                     .as_bytes())?;
+                            .as_bytes())?;
         }
         Ok(())
     }
@@ -339,11 +343,11 @@ impl<T, D> DeltaBuffer<T, D>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use internal::Rating;
     use rand;
     use rand::Rng;
-    use internal::Rating;
-    use std::convert::From;
     use std::cmp::min;
+    use std::convert::From;
 
     fn random_buffer() -> RatingBuffer {
         let mut rng = rand::thread_rng();
@@ -450,11 +454,13 @@ impl<T, D> DeltaBufferBuilder<T, D>
             }
         }
 
-        self.inner.data.push(DeltaSegment {
-            delta: d,
-            start: t,
-            len: len,
-        });
+        self.inner
+            .data
+            .push(DeltaSegment {
+                      delta: d,
+                      start: t,
+                      len: len,
+                  });
     }
 
     pub fn add_buffer_from(&mut self, index: u64, buffer: &DeltaBuffer<T, D>) {
@@ -531,10 +537,11 @@ impl<'a, T, D> DeltaBufferReader<'a, T, D>
 
     pub fn read_by_delta(&mut self, d: TimeDelta) -> T {
         assert!(d >= TimeDelta::zero());
-        self.read_by_delta_safe(d).unwrap_or_else(|| {
-            panic!("DeltaBuffer::read_by_delta(): out of bounds access (delta is {})",
-                   d)
-        })
+        self.read_by_delta_safe(d)
+            .unwrap_or_else(|| {
+                                panic!("DeltaBuffer::read_by_delta(): out of bounds access (delta is {})",
+                                       d)
+                            })
     }
 
     fn read_by_delta_safe(&mut self, d: TimeDelta) -> Option<T> {
@@ -560,7 +567,9 @@ impl<'a, T, D> DeltaBufferReader<'a, T, D>
     #[cfg(test)]
     pub fn read_current_safe(&mut self) -> Option<T> {
         let query_rest = self.query_rest;
-        self.iter.peek().map(|segment| segment.start + segment.delta * query_rest as i64)
+        self.iter
+            .peek()
+            .map(|segment| segment.start + segment.delta * query_rest as i64)
     }
 }
 

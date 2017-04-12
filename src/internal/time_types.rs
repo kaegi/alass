@@ -17,8 +17,8 @@
 
 
 use std;
-use std::ops::*;
 use std::cmp::{Ordering, max, min};
+use std::ops::*;
 
 /// Implements conversion to integer variables for TimeDelta and TimePoint.
 macro_rules! impl_from {
@@ -260,7 +260,11 @@ impl TimeSpan {
     /// assert!(ts.start() == t0 && ts.end() == t10);
     /// ```
     pub fn new_safe(start: TimePoint, end: TimePoint) -> TimeSpan {
-        if end < start { TimeSpan::new(end, start) } else { TimeSpan::new(start, end) }
+        if end < start {
+            TimeSpan::new(end, start)
+        } else {
+            TimeSpan::new(start, end)
+        }
     }
 
 

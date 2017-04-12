@@ -16,10 +16,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-use std;
-use std::ops::*;
 use internal::TimeDelta;
+use std;
 use std::cmp::max;
+use std::ops::*;
 
 // these objects determine the precision/length of the rating (i32/i64) - lower
 // values take less space and time, higher values have higher precision

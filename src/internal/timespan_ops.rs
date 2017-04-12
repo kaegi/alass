@@ -16,9 +16,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+use internal::{TimeDelta, TimeSpan};
 use std;
 use std::cmp::max;
-use internal::{TimeDelta, TimeSpan};
 
 fn prepare_spans_sorted(overlapping: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
     if overlapping.is_empty() {
@@ -37,7 +37,10 @@ fn prepare_spans_sorted(overlapping: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize
         mapping[i] = i2;
     }
 
-    (sorted_overlapping.into_iter().map(|(_, ts)| ts).collect(), mapping)
+    (sorted_overlapping.into_iter()
+                       .map(|(_, ts)| ts)
+                       .collect(),
+     mapping)
 }
 
 /// Returns a smaller list of non-overlapping time spans and a vector with
@@ -81,7 +84,10 @@ fn prepare_spans_non_overlapping(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>
 /// are grouped together with next or previous time spans.
 fn prepare_spans_nonzero(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
     // list of non-zero spans
-    let non_zero_spans: Vec<TimeSpan> = v.iter().cloned().filter(|&ts| ts.len() > TimeDelta::zero()).collect();
+    let non_zero_spans: Vec<TimeSpan> = v.iter()
+                                         .cloned()
+                                         .filter(|&ts| ts.len() > TimeDelta::zero())
+                                         .collect();
     if non_zero_spans.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -96,8 +102,16 @@ fn prepare_spans_nonzero(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
             continue;
         }
 
-        let prev_nonzero_ts_opt = if new_index == 0 { None } else { Some(non_zero_spans[new_index - 1]) };
-        let next_nonzero_ts_opt = if new_index == non_zero_spans.len() { None } else { Some(non_zero_spans[new_index]) };
+        let prev_nonzero_ts_opt = if new_index == 0 {
+            None
+        } else {
+            Some(non_zero_spans[new_index - 1])
+        };
+        let next_nonzero_ts_opt = if new_index == non_zero_spans.len() {
+            None
+        } else {
+            Some(non_zero_spans[new_index])
+        };
 
         let merge_with_prev = match (prev_nonzero_ts_opt, next_nonzero_ts_opt) {
             (None, None) => panic!("No previous or next span in non-empty non_zero_span vector"),
@@ -107,7 +121,11 @@ fn prepare_spans_nonzero(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
         };
 
 
-        indices.push(if merge_with_prev { new_index - 1 } else { new_index });
+        indices.push(if merge_with_prev {
+                         new_index - 1
+                     } else {
+                         new_index
+                     });
     }
 
     (non_zero_spans, indices)
@@ -118,7 +136,9 @@ pub fn prepare_time_spans(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
         return (Vec::new(), Vec::new());
     }
 
-    let operations = [prepare_spans_sorted, prepare_spans_non_overlapping, prepare_spans_nonzero];
+    let operations = [prepare_spans_sorted,
+                      prepare_spans_non_overlapping,
+                      prepare_spans_nonzero];
     let mut mapping: Vec<usize> = (0..v.len()).collect();
     let mut result = v;
     for &operation in &operations {
@@ -168,10 +188,10 @@ mod tests {
                            .cloned()
                            .zip(non_overlapping.iter().cloned().skip(1))
                            .inspect(|&(last, current)| {
-                               assert!(last.start() <= last.end());
-                               assert!(last.end() <= current.start());
-                               assert!(current.start() <= current.end());
-                           })
+                                        assert!(last.start() <= last.end());
+                                        assert!(last.end() <= current.start());
+                                        assert!(current.start() <= current.end());
+                                    })
                            .count();
 
             // test mapping from "overlapping -> non-overlapping"

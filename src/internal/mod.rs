@@ -23,9 +23,9 @@ mod aligner;
 mod timespan_ops;
 mod utils;
 
-pub use self::delta_compression::*;
-pub use self::time_types::*;
-pub use self::rating_type::*;
 pub use self::aligner::*;
+pub use self::delta_compression::*;
+pub use self::rating_type::*;
+pub use self::time_types::*;
 pub use self::timespan_ops::*;
 pub use self::utils::*;

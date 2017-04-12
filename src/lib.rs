@@ -38,11 +38,12 @@ extern crate arrayvec;
 mod internal;
 
 // for external use (in other crates)
+
+use internal::{Aligner, prepare_time_spans};
 pub use internal::{ProgressHandler, TimeDelta, TimePoint, TimeSpan};
 
 // for use in this module (in lib.rs)
 use std::vec::from_elem;
-use internal::{Aligner, prepare_time_spans};
 
 
 /// Matches an `incorrect` subtitle list to a `reference` subtitle list.
@@ -90,9 +91,9 @@ pub fn align(list: Vec<TimeSpan>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use internal::{TimePoint, prepare_time_spans};
     use rand;
     use rand::Rng;
-    use internal::{TimePoint, prepare_time_spans};
 
     /// Some special time span sequences.
     fn predefined_time_spans() -> Vec<Vec<TimeSpan>> {
@@ -103,7 +104,9 @@ mod tests {
              vec![TimeSpan::new(t0, t0)],
              vec![TimeSpan::new(t0, t1000)],
              vec![TimeSpan::new(t0, t1000), TimeSpan::new(t1000, t1000)],
-             vec![TimeSpan::new(t0, t1000), TimeSpan::new(t1000, t1000), TimeSpan::new(t1000, t2000)],
+             vec![TimeSpan::new(t0, t1000),
+                  TimeSpan::new(t1000, t1000),
+                  TimeSpan::new(t1000, t2000)],
              vec![TimeSpan::new(t1000, t1000), TimeSpan::new(t1000, t1000)]]
     }
 
