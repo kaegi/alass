@@ -589,13 +589,13 @@ impl<'a, T, D> Iterator for DeltaBufferIter<'a, T, D>
 // /////////////////////////////////////////////////////////////////////////////////////////////////
 // COMBINED SEGMENT ITERATOR
 
-pub trait Segmentable {
+pub trait Segment {
     type Item;
     fn len(self) -> u64;
     fn split_from(self, start_index: u64, len: u64) -> Self::Item;
 }
 
-impl<T, D> Segmentable for DeltaSegment<T, D>
+impl<T, D> Segment for DeltaSegment<T, D>
     where T: Add<D, Output = T> + Copy,
           D: Mul<i64, Output = D> + Copy
 {
@@ -618,8 +618,8 @@ impl<T, D> Segmentable for DeltaSegment<T, D>
 pub struct CombinedSegmentIterator<I1, I2, K1, K2>
     where I1: Iterator<Item = K1>,
           I2: Iterator<Item = K2>,
-          K1: Segmentable,
-          K2: Segmentable
+          K1: Segment,
+          K2: Segment
 {
     pos1: u64,
     pos2: u64,
@@ -630,8 +630,8 @@ pub struct CombinedSegmentIterator<I1, I2, K1, K2>
 impl<I1, I2, K1, K2> CombinedSegmentIterator<I1, I2, K1, K2>
     where I1: Iterator<Item = K1>,
           I2: Iterator<Item = K2>,
-          K1: Segmentable + Copy,
-          K2: Segmentable + Copy
+          K1: Segment + Copy,
+          K2: Segment + Copy
 {
     pub fn new(i1: I1, i2: I2) -> CombinedSegmentIterator<I1, I2, K1, K2> {
         CombinedSegmentIterator {
@@ -646,8 +646,8 @@ impl<I1, I2, K1, K2> CombinedSegmentIterator<I1, I2, K1, K2>
 impl<I1, I2, K1, K2> Iterator for CombinedSegmentIterator<I1, I2, K1, K2>
     where I1: Iterator<Item = K1>,
           I2: Iterator<Item = K2>,
-          K1: Segmentable + Copy,
-          K2: Segmentable + Copy
+          K1: Segment + Copy,
+          K2: Segment + Copy
 {
     type Item = (K1::Item, K2::Item);
 
@@ -663,8 +663,8 @@ impl<I1, I2, K1, K2> Iterator for CombinedSegmentIterator<I1, I2, K1, K2>
             }
         };
 
-        let rest1 = <K1 as Segmentable>::len(segment1) - self.pos1;
-        let rest2 = <K2 as Segmentable>::len(segment2) - self.pos2;
+        let rest1 = <K1 as Segment>::len(segment1) - self.pos1;
+        let rest2 = <K2 as Segment>::len(segment2) - self.pos2;
         let orig_pos1 = self.pos1;
         let orig_pos2 = self.pos2;
 
@@ -687,21 +687,21 @@ impl<I1, I2, K1, K2> Iterator for CombinedSegmentIterator<I1, I2, K1, K2>
             rest1
         };
 
-        let t1 = <K1 as Segmentable>::split_from(segment1, orig_pos1, step);
-        let t2 = <K2 as Segmentable>::split_from(segment2, orig_pos2, step);
+        let t1 = <K1 as Segment>::split_from(segment1, orig_pos1, step);
+        let t2 = <K2 as Segment>::split_from(segment2, orig_pos2, step);
 
         Some((t1, t2))
     }
 }
 
 #[derive(Clone, Copy)]
-pub enum DummySegment<K: Segmentable> {
+pub enum DummySegment<K: Segment> {
     DummySegment(u64),
     Segment(K),
 }
 
-impl<K> Segmentable for DummySegment<K>
-    where K: Segmentable
+impl<K> Segment for DummySegment<K>
+    where K: Segment
 {
     type Item = Option<K::Item>;
 
