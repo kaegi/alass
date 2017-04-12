@@ -246,14 +246,6 @@ impl<T, D> DeltaBuffer<T, D>
         builder.get_buffer()
     }
 
-    /// Returns an index where the value is the maximum. The exact maximum
-    /// index is not specified.
-    pub fn get_max_index(&self) -> Option<usize>
-        where T: Ord
-    {
-        self.iter().enumerate().max_by_key(|&(_, rating)| rating).map(|(i, _)| i)
-    }
-
     /// The default value will be used to create a vector with segments from an
     /// empty self.data.
     /// For "new_length >= length" this will just create a copy.
@@ -284,6 +276,7 @@ impl<T, D> DeltaBuffer<T, D>
         }
     }
 
+    #[cfg(test)]
     pub fn iter(&self) -> DeltaBufferIter<T, D>
         where T: Add<D, Output = T> + Copy,
               D: Mul<i64, Output = D> + Copy
@@ -564,6 +557,7 @@ impl<'a, T, D> DeltaBufferReader<'a, T, D>
         }
     }
 
+    #[cfg(test)]
     pub fn read_current_safe(&mut self) -> Option<T> {
         let query_rest = self.query_rest;
         self.iter.peek().map(|segment| segment.start + segment.delta * query_rest as i64)
@@ -573,10 +567,12 @@ impl<'a, T, D> DeltaBufferReader<'a, T, D>
 // /////////////////////////////////////////////////////////////////////////////////////////////////
 // BUFFER ITERATOR
 
+#[cfg(test)]
 pub struct DeltaBufferIter<'a, T: 'a, D: 'a> {
     reader: DeltaBufferReader<'a, T, D>,
 }
 
+#[cfg(test)]
 impl<'a, T, D> Iterator for DeltaBufferIter<'a, T, D>
     where T: Add<D, Output = T> + Copy,
           D: Mul<i64, Output = D> + Copy

@@ -187,9 +187,8 @@ impl Aligner {
         }
 
         // find the index in the last rating buffer (which represents all spans) with
-        // maximum rating; the unwrap should never fail because of "buffer length > 0".
-        let best_index = last_rating_buffer.get_max_index().unwrap();
-        let mut best_end = self.get_start() + TimeDelta::one() * best_index as i64;
+        // maximum rating - which is the last index because the ratings rise monotonous.
+        let mut best_end = self.get_end() - TimeDelta::one();
 
         // because we can read each interval ends at the span start of next span, we
         // just have to go backwards from span start to span start
