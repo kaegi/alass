@@ -242,18 +242,25 @@ impl Aligner {
     /// level, each N+1 row (giving the next N+1xU matrix) can be computed by
     /// the NxU matrix and the previous values on the N+1 row. I call this new
     /// matrix-row "lane".
-    fn get_next_lane<I, A, F>(&self,
-                              // will be ignored if `get_maxrat_segments` never return Choice::NosplitReposition
-                              optimal_startdiff: TimeDelta,
-                              iterator: I,
-                              get_maxrat_segments: F)
-                              -> (RatingBuffer, TimepointBuffer)
-        where I: Iterator<Item = (RatingSegment, A)>,
+    fn get_next_lane<I1, I2, F>(&self,
+                                // will be ignored if `get_maxrat_segments` never return Choice::NosplitReposition
+                                optimal_startdiff: TimeDelta,
+                                reposition_rating_iter: I1,
+                                nosplit_rating_iter: I2,
+                                get_maxrat_segments: F)
+                                -> (RatingBuffer, TimepointBuffer)
+        where I1: Iterator<Item = RatingSegment>,
+              I2: Iterator<Item = DummySegment<RatingSegment>>,
 
-              // the A means "additional data" (nosplit rating segment has `RatingBuffer` or no nosplit rating segment has `()`).
+              // The three rating segemnts are the "reposition rating" the "fixed rating" and the "nosplit rating".
+              //
               // The last parameter is the "absolute best choice" in the last loop. Because these absolute best (== one maxrat segment),
               // choice is probably the same in the next loop, we can do optimizations with it.
-              F: Fn(RatingSegment, RatingSegment, A, Option<Choice>) -> ArrayVec<[(RatingSegment, Choice); 3]>
+              F: Fn(RatingSegment,
+                    RatingSegment,
+                    Option<RatingSegment>,
+                    Option<Choice>)
+                    -> ArrayVec<[(RatingSegment, Choice); 3]>
     {
 
         let mut rating_builder = DeltaBufferBuilder::<Rating, Rating>::new();
@@ -265,7 +272,7 @@ impl Aligner {
         };
         let mut last_absolute_best_choice: Option<Choice> = None;
 
-        for (reposition_rating_seg, additional_info) in iterator {
+        for (reposition_rating_seg, nosplit_reposition_rating) in CombinedSegmentIterator::new(reposition_rating_iter, nosplit_rating_iter) {
 
             if reposition_rating_seg.is_decreasing() && reposition_rating_seg.first_value() > past_max.rating {
                 // the first rating value is the new maximum, but after that, the rating
@@ -279,7 +286,7 @@ impl Aligner {
 
             let maxrat_segs = get_maxrat_segments(reposition_rating_seg,
                                                   fixed_rating_seg,
-                                                  additional_info,
+                                                  nosplit_reposition_rating,
                                                   last_absolute_best_choice);
 
             last_absolute_best_choice = if maxrat_segs.len() == 1 { Some(maxrat_segs[0].1) } else { None };
@@ -325,18 +332,16 @@ impl Aligner {
 
     fn get_next_lane_without_nosplit(&self, reposition_rating_buffer: &RatingBuffer) -> (RatingBuffer, TimepointBuffer) {
         self.get_next_lane(TimeDelta::zero(), // ignored
-
-                           // iterator which only iterates over segments of the reposition buffer
-                           reposition_rating_buffer.iter_segments().map(|&segment| (segment, ())),
+                           reposition_rating_buffer.iter_segments().cloned(),
+                           once(DummySegment::DummySegment::<RatingSegment>(self.get_buffer_length())),
 
                            // do not compare with nosplit segment
-                           Self::get_segments_and_choices_without_nosplit)
+                           Self::get_segments_and_choices_with_nosplit)
 
     }
 
     fn get_segments_and_choices_without_nosplit(reposition_rating_seg: RatingSegment,
                                                 fixed_rating_seg: RatingSegment,
-                                                _: (), // makes this function type compatible with the *with_nosplit variant
                                                 _: Option<Choice>)
                                                 -> ArrayVec<[(RatingSegment, Choice); 3]> {
 
@@ -356,7 +361,6 @@ impl Aligner {
             None => {
                 return Self::get_segments_and_choices_without_nosplit(reposition_rating_seg,
                                                                       fixed_rating_seg,
-                                                                      (),
                                                                       last_absolute_best_choice);
             }
         };
@@ -400,11 +404,9 @@ impl Aligner {
         let bonus_segments_iter = reposition_rating_buffer.iter_segments().map(|&x| DummySegment::Segment(x + self.nosplit_bonus));
         let shifted_bonus_segments_iter = once(dummy_segment).chain(bonus_segments_iter);
 
-        let reposition_rating_segments_iter = reposition_rating_buffer.iter_segments().cloned();
-
         self.get_next_lane(optimal_startdiff,
-                           // iterator which is combined with nosplit buffer
-                           CombinedSegmentIterator::new(reposition_rating_segments_iter, shifted_bonus_segments_iter),
+                           reposition_rating_buffer.iter_segments().cloned(),
+                           shifted_bonus_segments_iter,
                            Self::get_segments_and_choices_with_nosplit)
     }
 
