@@ -169,10 +169,10 @@ impl Aligner {
 
         // iterator that removes the first element and adds a None value to the end ->
         // provedes the "next" span
-        let next_iter = self.list.iter().skip(1).map(|&x| Some(x)).chain(Some(None).into_iter());
-        for (time_span, next_span_opt) in self.list.iter().cloned().zip(next_iter) {
+        for (i, time_span) in self.list.iter().cloned().enumerate() {
             // compute the space between this span and the next span
-            let optimal_startdiff_opt = next_span_opt.and_then(|next_span| Some(next_span.start() - time_span.start()));
+            let next_span_opt = self.list.get(i + 1);
+            let optimal_startdiff_opt = next_span_opt.map(|next_span| next_span.start() - time_span.start());
             let (rating_buffer, span_positions_buffer) = self.align_new_span(last_rating_buffer, time_span, optimal_startdiff_opt);
 
             // the rating buffer is only needed for the next lane, but the last span
