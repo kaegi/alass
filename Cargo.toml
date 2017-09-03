@@ -11,7 +11,7 @@ license = "GPL-3.0"
 
 
 [dependencies]
-arrayvec = "0.3.20"
+arrayvec = "0.4.0"
 
 # dependencies of binary
 clap = "2.22.2"
