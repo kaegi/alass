@@ -225,13 +225,13 @@ fn run() -> Result<()> {
             .short("n")
             .long("allow-negative-timestamps")
             .help("Negative timestamps can lead to problems with the output file, so by default 0 will be written instead. This option allows you to disable this behavior."))
-        .arg(Arg::with_name("sub-fps-reference")
-            .long("sub-fps-reference")
+        .arg(Arg::with_name("sub-fps-ref")
+            .long("sub-fps-ref")
             .value_name("floating-point number in frames-per-second")
             .default_value("30")
             .help("Specifies the frames-per-second for the accompanying video of MicroDVD `.sub` files (MicroDVD `.sub` files store timing information as frame numbers). Only affects the reference subtitle file."))
-        .arg(Arg::with_name("sub-fps-incorrect")
-            .long("sub-fps-incorrect")
+        .arg(Arg::with_name("sub-fps-inc")
+            .long("sub-fps-inc")
             .value_name("floating-point number in frames-per-second")
             .default_value("30")
             .help("Specifies the frames-per-second for the accompanying video of MicroDVD `.sub` files (MicroDVD `.sub` files store timing information as frame numbers). Only affects the incorrect subtitle file."))
@@ -260,8 +260,8 @@ fn run() -> Result<()> {
         return Err(Error::from(ValueNotInRange(split_penalty, 0.0, 100.0))).chain_err(|| Error::from(InvalidArgument("split-penalty")));
     }
 
-    let sub_fps_ref: f64 = unpack_clap_number_f64(&matches, "sub-fps-reference")?;
-    let sub_fps_inc: f64 = unpack_clap_number_f64(&matches, "sub-fps-incorrect")?;
+    let sub_fps_ref: f64 = unpack_clap_number_f64(&matches, "sub-fps-ref")?;
+    let sub_fps_inc: f64 = unpack_clap_number_f64(&matches, "sub-fps-inc")?;
 
     let allow_negative_timestamps = matches.is_present("allow-negative-timestamps");
 
