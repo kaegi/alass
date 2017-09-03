@@ -18,6 +18,7 @@ clap = "2.22.2"
 error-chain = "~0.10.0"
 pbr = "1.0.0-alpha.2"
 subparse = "~0.2.0"
+encoding = "0.2.33"
 
 [[bin]]
 doc = false
