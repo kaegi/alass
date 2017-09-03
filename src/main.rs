@@ -24,6 +24,7 @@ extern crate aligner;
 extern crate clap;
 extern crate pbr;
 extern crate subparse;
+extern crate encoding;
 
 const PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const PKG_NAME: Option<&'static str> = option_env!("CARGO_PKG_NAME");
@@ -234,6 +235,14 @@ fn run() -> Result<()> {
             .value_name("floating-point number in frames-per-second")
             .default_value("30")
             .help("Specifies the frames-per-second for the accompanying video of MicroDVD `.sub` files (MicroDVD `.sub` files store timing information as frame numbers). Only affects the incorrect subtitle file."))
+        .arg(Arg::with_name("encoding-ref")
+            .long("encoding-ref")
+            .default_value("utf-8")
+            .help("Charset encoding of the reference subtitle file."))
+        .arg(Arg::with_name("encoding-inc")
+            .long("encoding-inc")
+            .default_value("utf-8")
+            .help("Charset encoding of the incorrect subtitle file."))
         .after_help("This program works with .srt, .ass/.ssa, .idx and .sub files. The corrected file will have the same format as the incorrect file.")
         .get_matches();
 
@@ -256,6 +265,11 @@ fn run() -> Result<()> {
 
     let allow_negative_timestamps = matches.is_present("allow-negative-timestamps");
 
+    let encoding_label_ref = matches.value_of("encoding-ref").unwrap();
+    let encoding_label_inc = matches.value_of("encoding-inc").unwrap();
+
+    let encoding_ref = encoding::label::encoding_from_whatwg_label(encoding_label_ref).ok_or_else(|| Error::from(UnknownEncoding(encoding_label_ref.to_string())))?;
+    let encoding_inc = encoding::label::encoding_from_whatwg_label(encoding_label_inc).ok_or_else(|| Error::from(UnknownEncoding(encoding_label_inc.to_string())))?;
 
     let reference_sub_data = read_file_to_bytes(reference_file_path)?;
     let incorrect_sub_data = read_file_to_bytes(incorrect_file_path)?;
@@ -275,9 +289,9 @@ fn run() -> Result<()> {
                        .into());
     }
 
-    let timed_reference_file = parse_bytes(reference_file_format, &reference_sub_data, sub_fps_inc)
+    let timed_reference_file = parse_bytes(reference_file_format, &reference_sub_data, encoding_ref, sub_fps_inc)
         .chain_err(|| FileOperation(reference_file_path.to_string()))?;
-    let timed_incorrect_file = parse_bytes(incorrect_file_format, &incorrect_sub_data, sub_fps_ref)
+    let timed_incorrect_file = parse_bytes(incorrect_file_format, &incorrect_sub_data, encoding_inc, sub_fps_ref)
         .chain_err(|| FileOperation(incorrect_file_path.to_string()))?;
 
     let timings_reference = corrected_timings(timed_reference_file.get_subtitle_entries()?

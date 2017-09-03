@@ -32,6 +32,9 @@ error_chain! {
         FileOperation(file: String) {
             display("operation on file '{}' failed", file)
         }
+        UnknownEncoding(enc: String) {
+            display("unknown file encoding '{}'", enc)
+        }
         SsaFormattingInfoNotFound {
             description("file did not have a `[Events]` section containing a line beginning with `Format: `")
         }
