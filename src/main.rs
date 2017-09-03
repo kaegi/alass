@@ -218,7 +218,7 @@ fn run() -> Result<()> {
             .short("i")
             .long("interval")
             .value_name("integer in milliseconds")
-            .help("The smallest recognized time interval, smaller numbers make alignment more accurate, greater numbers make it faster.")
+            .help("The smallest recognized time interval, smaller numbers make the alignment more accurate, greater numbers make aligning faster.")
             .default_value("1"))
         .arg(Arg::with_name("allow-negative-timestamps")
             .short("n")
@@ -228,12 +228,12 @@ fn run() -> Result<()> {
             .long("sub-fps-reference")
             .value_name("floating-point number in frames-per-second")
             .default_value("30")
-            .help("Specify the frames-per-second for the accompanying video of MicroDVD `.sub` files (they store the timings in frame numbers). Does not affect anything except loading of the reference `.sub` files."))
+            .help("Specifies the frames-per-second for the accompanying video of MicroDVD `.sub` files (MicroDVD `.sub` files store timing information as frame numbers). Only affects the reference subtitle file."))
         .arg(Arg::with_name("sub-fps-incorrect")
             .long("sub-fps-incorrect")
             .value_name("floating-point number in frames-per-second")
             .default_value("30")
-            .help("The same as `sub-fps-reference`, just for the incorrect subtitle file."))
+            .help("Specifies the frames-per-second for the accompanying video of MicroDVD `.sub` files (MicroDVD `.sub` files store timing information as frame numbers). Only affects the incorrect subtitle file."))
         .after_help("This program works with .srt, .ass/.ssa, .idx and .sub files. The corrected file will have the same format as the incorrect file.")
         .get_matches();
 
