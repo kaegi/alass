@@ -63,17 +63,16 @@ impl ProgressHandler for ProgressInfo {
         self.progress_bar.as_mut().unwrap().inc();
     }
     fn finish(&mut self) {
-        self.progress_bar
-            .as_mut()
-            .unwrap()
-            .finish_println("\n");
+        self.progress_bar.as_mut().unwrap().finish_println("\n");
     }
 }
 
 fn read_file_to_bytes(path: &str) -> Result<Vec<u8>> {
-    let mut file = File::open(path)
-        .map_err(|e| Error::from(Io(e)))
-        .chain_err(|| FileOperation(path.to_string()))?;
+    let mut file = File::open(path).map_err(|e| Error::from(Io(e))).chain_err(
+        || {
+            FileOperation(path.to_string())
+        },
+    )?;
     let mut v = Vec::new();
     file.read_to_end(&mut v)
         .map_err(|e| Error::from(Io(e)))
@@ -106,9 +105,11 @@ fn timings_to_alg_timespans(v: &[TimeSpan], interval: i64) -> Vec<AlgTimeSpan> {
     v.iter()
      .cloned()
      .map(|timespan| {
-              AlgTimeSpan::new_safe(timing_to_alg_timepoint(timespan.start, interval),
-                                    timing_to_alg_timepoint(timespan.end, interval))
-          })
+        AlgTimeSpan::new_safe(
+            timing_to_alg_timepoint(timespan.start, interval),
+            timing_to_alg_timepoint(timespan.end, interval),
+        )
+    })
      .collect()
 }
 fn alg_deltas_to_timing_deltas(v: &[AlgTimeDelta], interval: i64) -> Vec<TimeDelta> {
@@ -150,9 +151,11 @@ fn get_subtitle_delta_groups(mut v: Vec<(AlgTimeDelta, TimeSpan)>) -> Vec<(AlgTi
 fn corrected_timings(v: Vec<TimeSpan>) -> Vec<TimeSpan> {
     v.into_iter()
      .map(|timespan| {
-              TimeSpan::new(min(timespan.start, timespan.end),
-                            max(timespan.start, timespan.end))
-          })
+        TimeSpan::new(
+            min(timespan.start, timespan.end),
+            max(timespan.start, timespan.end),
+        )
+    })
      .collect()
 }
 
@@ -161,11 +164,13 @@ fn corrected_timings(v: Vec<TimeSpan>) -> Vec<TimeSpan> {
 fn get_truncated_deltas(timespans: &[TimeSpan], deltas: Vec<TimeDelta>) -> Vec<TimeDelta> {
     deltas.into_iter()
           .zip(timespans.iter().cloned())
-          .map(|(delta, timespan)| if (delta + timespan.start).is_negative() {
-                   TimePoint::from_msecs(0) - timespan.start
-               } else {
-                   delta
-               })
+          .map(|(delta, timespan)| if (delta + timespan.start)
+        .is_negative()
+    {
+        TimePoint::from_msecs(0) - timespan.start
+    } else {
+        delta
+    })
           .collect()
 }
 
@@ -187,13 +192,17 @@ fn perror<'a, T: Into<std::borrow::Cow<'a, str>>>(s: T) {
 /// Does reading, parsing and nice error handling for a f64 clap parameter.
 fn unpack_clap_number_f64(matches: &clap::ArgMatches, parameter_name: &'static str) -> Result<f64> {
     let paramter_value_str: &str = matches.value_of(parameter_name).unwrap();
-    FromStr::from_str(paramter_value_str).chain_err(|| ArgumentParseError(parameter_name, paramter_value_str.to_string()))
+    FromStr::from_str(paramter_value_str).chain_err(|| {
+        ArgumentParseError(parameter_name, paramter_value_str.to_string())
+    })
 }
 
 /// Does reading, parsing and nice error handling for a f64 clap parameter.
 fn unpack_clap_number_i64(matches: &clap::ArgMatches, parameter_name: &'static str) -> Result<i64> {
     let paramter_value_str: &str = matches.value_of(parameter_name).unwrap();
-    FromStr::from_str(paramter_value_str).chain_err(|| ArgumentParseError(parameter_name, paramter_value_str.to_string()))
+    FromStr::from_str(paramter_value_str).chain_err(|| {
+        ArgumentParseError(parameter_name, paramter_value_str.to_string())
+    })
 }
 
 fn run() -> Result<()> {
@@ -268,8 +277,14 @@ fn run() -> Result<()> {
     let encoding_label_ref = matches.value_of("encoding-ref").unwrap();
     let encoding_label_inc = matches.value_of("encoding-inc").unwrap();
 
-    let encoding_ref = encoding::label::encoding_from_whatwg_label(encoding_label_ref).ok_or_else(|| Error::from(UnknownEncoding(encoding_label_ref.to_string())))?;
-    let encoding_inc = encoding::label::encoding_from_whatwg_label(encoding_label_inc).ok_or_else(|| Error::from(UnknownEncoding(encoding_label_inc.to_string())))?;
+    let encoding_ref = encoding::label::encoding_from_whatwg_label(encoding_label_ref)
+        .ok_or_else(|| {
+            Error::from(UnknownEncoding(encoding_label_ref.to_string()))
+        })?;
+    let encoding_inc = encoding::label::encoding_from_whatwg_label(encoding_label_inc)
+        .ok_or_else(|| {
+            Error::from(UnknownEncoding(encoding_label_inc.to_string()))
+        })?;
 
     let reference_sub_data = read_file_to_bytes(reference_file_path)?;
     let incorrect_sub_data = read_file_to_bytes(incorrect_file_path)?;
@@ -284,47 +299,67 @@ fn run() -> Result<()> {
     // this program internally stores the files in a non-destructable way (so
     // formatting is preserved) but has no abilty to convert between formats
     if incorrect_file_format != output_file_format {
-        return Err(DifferentOutputFormat(incorrect_file_path.to_string(),
-                                         output_file_path.to_string())
-                       .into());
+        return Err(
+            DifferentOutputFormat(
+                incorrect_file_path.to_string(),
+                output_file_path.to_string(),
+            )
+            .into(),
+        );
     }
 
-    let timed_reference_file = parse_bytes(reference_file_format, &reference_sub_data, encoding_ref, sub_fps_inc)
-        .chain_err(|| FileOperation(reference_file_path.to_string()))?;
-    let timed_incorrect_file = parse_bytes(incorrect_file_format, &incorrect_sub_data, encoding_inc, sub_fps_ref)
-        .chain_err(|| FileOperation(incorrect_file_path.to_string()))?;
+    let timed_reference_file = parse_bytes(
+        reference_file_format,
+        &reference_sub_data,
+        encoding_ref,
+        sub_fps_inc,
+    )
+                               .chain_err(|| FileOperation(reference_file_path.to_string()))?;
+    let timed_incorrect_file = parse_bytes(
+        incorrect_file_format,
+        &incorrect_sub_data,
+        encoding_inc,
+        sub_fps_ref,
+    )
+                               .chain_err(|| FileOperation(incorrect_file_path.to_string()))?;
 
-    let timings_reference = corrected_timings(timed_reference_file.get_subtitle_entries()?
-                                                                  .into_iter()
-                                                                  .map(|subentry| subentry.timespan)
-                                                                  .collect());
-    let timings_incorrect = corrected_timings(timed_incorrect_file.get_subtitle_entries()?
-                                                                  .into_iter()
-                                                                  .map(|subentry| subentry.timespan)
-                                                                  .collect());
+    let timings_reference = corrected_timings(
+        timed_reference_file.get_subtitle_entries()?
+                            .into_iter()
+                            .map(|subentry| subentry.timespan)
+                            .collect(),
+    );
+    let timings_incorrect = corrected_timings(
+        timed_incorrect_file.get_subtitle_entries()?
+                            .into_iter()
+                            .map(|subentry| subentry.timespan)
+                            .collect(),
+    );
 
     let alg_reference_timespans = timings_to_alg_timespans(&timings_reference, interval);
     let alg_incorrect_timespans = timings_to_alg_timespans(&timings_incorrect, interval);
 
-    let alg_deltas = align(alg_incorrect_timespans.clone(),
-                           alg_reference_timespans,
-                           split_penalty / 100.0,
-                           Some(Box::new(ProgressInfo::default())));
+    let alg_deltas = align(
+        alg_incorrect_timespans.clone(),
+        alg_reference_timespans,
+        split_penalty / 100.0,
+        Some(Box::new(ProgressInfo::default())),
+    );
     let mut deltas = alg_deltas_to_timing_deltas(&alg_deltas, interval);
 
     // list of original subtitles lines which have the same timings
-    let shift_groups: Vec<(AlgTimeDelta, Vec<TimeSpan>)> =
-        get_subtitle_delta_groups(alg_deltas.iter()
-                                            .cloned()
-                                            .zip(timings_incorrect.iter().cloned())
-                                            .collect());
+    let shift_groups: Vec<(AlgTimeDelta, Vec<TimeSpan>)> = get_subtitle_delta_groups(
+        alg_deltas.iter()
+                  .cloned()
+                  .zip(timings_incorrect.iter().cloned())
+                  .collect(),
+    );
 
     for (shift_group_delta, shift_group_lines) in shift_groups {
         // computes the first and last timestamp for all lines with that delta
         // -> that way we can provide the user with an information like
         //     "100 subtitles with 10min length"
-        let min_max_opt = shift_group_lines.iter()
-                                           .fold(None, |last_opt, subline| {
+        let min_max_opt = shift_group_lines.iter().fold(None, |last_opt, subline| {
             let new_min = subline.start;
             let new_max = subline.end;
             if let Some((last_min, last_max)) = last_opt {
@@ -339,10 +374,12 @@ fn run() -> Result<()> {
             None => unreachable!(),
         };
 
-        pinfo(format!("shifted block of {} subtitles with length {} by {}",
-                      shift_group_lines.len(),
-                      max - min,
-                      alg_delta_to_delta(shift_group_delta, interval)));
+        pinfo(format!(
+            "shifted block of {} subtitles with length {} by {}",
+            shift_group_lines.len(),
+            max - min,
+            alg_delta_to_delta(shift_group_delta, interval)
+        ));
     }
 
 
@@ -355,16 +392,23 @@ fn run() -> Result<()> {
         pwarning("file with incorrect subtitles has no lines");
     }
 
-    let writing_negative_timespans = deltas.iter()
-                                           .zip(timings_incorrect.iter())
-                                           .any(|(&delta, &timespan)| (delta + timespan.start).is_negative());
+    let writing_negative_timespans = deltas.iter().zip(timings_incorrect.iter()).any(|(&delta,
+      &timespan)| {
+        (delta + timespan.start).is_negative()
+    });
     if writing_negative_timespans {
         println!("");
-        pwarning("some subtitles now have negative timings, which can cause invalid subtitle files");
+        pwarning(
+            "some subtitles now have negative timings, which can cause invalid subtitle files",
+        );
         if allow_negative_timestamps {
-            pwarning("negative timestamps will be written to file, because you passed '-n' or '--allow-negative-timestamps'");
+            pwarning(
+                "negative timestamps will be written to file, because you passed '-n' or '--allow-negative-timestamps'",
+            );
         } else {
-            pwarning("negative subtitles will therefore be set to zero by default; pass '-n' or '--allow-negative-timestamps' to disable this behavior");
+            pwarning(
+                "negative subtitles will therefore be set to zero by default; pass '-n' or '--allow-negative-timestamps' to disable this behavior",
+            );
             deltas = get_truncated_deltas(&timings_incorrect, deltas);
         }
     }
@@ -373,15 +417,16 @@ fn run() -> Result<()> {
     // produce errors
     if output_file_format == SubtitleFormat::VobSubIdx {
         println!("");
-        pwarning("writing to an '.idx' file can lead to unexpected results due to restrictions of this format");
+        pwarning(
+            "writing to an '.idx' file can lead to unexpected results due to restrictions of this format",
+        );
     }
 
     // incorrect file -> correct file
-    let shifted_timespans: Vec<SubtitleEntry> =
-        timings_incorrect.iter()
-                         .zip(deltas.iter())
-                         .map(|(&timespan, &delta)| SubtitleEntry::from(timespan + delta))
-                         .collect();
+    let shifted_timespans: Vec<SubtitleEntry> = timings_incorrect.iter()
+                                                                 .zip(deltas.iter())
+                                                                 .map(|(&timespan, &delta)| SubtitleEntry::from(timespan + delta))
+                                                                 .collect();
 
     // write corrected files
     let mut correct_file = timed_incorrect_file.clone();
@@ -405,7 +450,9 @@ fn main() {
             if let Some(backtrace) = e.backtrace() {
                 perror(format!("backtrace: {:?}", backtrace));
             } else {
-                perror("note: run program with `env RUST_BACKTRACE=1` for a backtrace");
+                perror(
+                    "note: run program with `env RUST_BACKTRACE=1` for a backtrace",
+                );
             }
             std::process::exit(1);
         }

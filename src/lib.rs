@@ -59,11 +59,12 @@ use std::vec::from_elem;
 /// Especially for larger subtitles(e.g. 1 hour in millisecond resolution and 1000 subtitle lines) this
 /// process might take some seconds. To provide user feedback one can pass a `ProgressHandler` to
 /// this function.
-pub fn align(list: Vec<TimeSpan>,
-             reference: Vec<TimeSpan>,
-             split_penalty_normalized: f64,
-             progress_handler: Option<Box<ProgressHandler>>)
-             -> Vec<TimeDelta> {
+pub fn align(
+    list: Vec<TimeSpan>,
+    reference: Vec<TimeSpan>,
+    split_penalty_normalized: f64,
+    progress_handler: Option<Box<ProgressHandler>>,
+) -> Vec<TimeDelta> {
     let (list_nonoverlapping, list_indices) = prepare_time_spans(list.clone());
     let (ref_nonoverlapping, _) = prepare_time_spans(reference.clone());
 
@@ -72,10 +73,12 @@ pub fn align(list: Vec<TimeSpan>,
     }
 
     let list_len = list_nonoverlapping.len();
-    let aligner_opt = Aligner::new(list_nonoverlapping,
-                                   ref_nonoverlapping,
-                                   split_penalty_normalized,
-                                   progress_handler);
+    let aligner_opt = Aligner::new(
+        list_nonoverlapping,
+        ref_nonoverlapping,
+        split_penalty_normalized,
+        progress_handler,
+    );
 
     // get deltas for non-overlapping timespans
     let deltas = match aligner_opt {
@@ -100,14 +103,18 @@ mod tests {
         let t0 = TimePoint::from(0);
         let t1000 = TimePoint::from(1000);
         let t2000 = TimePoint::from(2000);
-        vec![vec![],
-             vec![TimeSpan::new(t0, t0)],
-             vec![TimeSpan::new(t0, t1000)],
-             vec![TimeSpan::new(t0, t1000), TimeSpan::new(t1000, t1000)],
-             vec![TimeSpan::new(t0, t1000),
-                  TimeSpan::new(t1000, t1000),
-                  TimeSpan::new(t1000, t2000)],
-             vec![TimeSpan::new(t1000, t1000), TimeSpan::new(t1000, t1000)]]
+        vec![
+            vec![],
+            vec![TimeSpan::new(t0, t0)],
+            vec![TimeSpan::new(t0, t1000)],
+            vec![TimeSpan::new(t0, t1000), TimeSpan::new(t1000, t1000)],
+            vec![
+                TimeSpan::new(t0, t1000),
+                TimeSpan::new(t1000, t1000),
+                TimeSpan::new(t1000, t2000),
+            ],
+            vec![TimeSpan::new(t1000, t1000), TimeSpan::new(t1000, t1000)],
+        ]
     }
 
     /// Generate random time span sequences
@@ -120,8 +127,10 @@ mod tests {
         for _ in 0..len {
             current_pos += (rng.next_u32() % 200) as i64 - 50;
             let current_len = (rng.next_u32() % 400) as i64;
-            v.push(TimeSpan::new(TimePoint::from(current_pos),
-                                 TimePoint::from(current_pos + current_len)));
+            v.push(TimeSpan::new(
+                TimePoint::from(current_pos),
+                TimePoint::from(current_pos + current_len),
+            ));
         }
 
         v

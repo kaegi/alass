@@ -98,7 +98,8 @@ impl SubAssign for Rating {
 }
 impl std::iter::Sum for Rating {
     fn sum<I>(iter: I) -> Rating
-        where I: Iterator<Item = Rating>
+    where
+        I: Iterator<Item = Rating>,
     {
         Rating(iter.map(|c| c.0).sum())
     }

@@ -56,10 +56,12 @@ pub fn get_overlapping_rating_changepoints(length: TimeDelta, constspan: TimeSpa
 
     let rise_delta = Rating::from_overlapping_spans(length, constspan.len());
 
-    [(rise_delta, timepoints[0]),
-     (-rise_delta, timepoints[1]),
-     (-rise_delta, timepoints[2]),
-     (rise_delta, timepoints[3])]
+    [
+        (rise_delta, timepoints[0]),
+        (-rise_delta, timepoints[1]),
+        (-rise_delta, timepoints[2]),
+        (rise_delta, timepoints[3]),
+    ]
 }
 
 /// Creates a new vector with `prev` as first element and the sorted elements
@@ -118,7 +120,8 @@ fn dedup_arrayvec4(a: ArrayVec<[u64; 4]>) -> ArrayVec<[u64; 4]> {
 }
 
 pub fn subseg_by_max_start<ID>(segs: [DeltaSegment<Rating, Rating>; 2], ids: [ID; 2], start: u64, end: u64) -> (RatingSegment, ID)
-    where ID: Copy + Eq
+where
+    ID: Copy + Eq,
 {
     if (segs[0].value_at_index(start as i64), segs[0].delta()) >= (segs[1].value_at_index(start as i64), segs[1].delta()) {
         (segs[0].subseg(start, end), ids[0])
@@ -136,7 +139,8 @@ pub fn subseg_by_max_start<ID>(segs: [DeltaSegment<Rating, Rating>; 2], ids: [ID
 /// of all given spans have to be same, the sum of all returned segments is the
 /// orginal length.
 pub fn get_best_rating_segments_of_2<ID>(segs: [DeltaSegment<Rating, Rating>; 2], ids: [ID; 2]) -> ArrayVec<[(DeltaSegment<Rating, Rating>, ID); 3]>
-    where ID: Copy + Eq
+where
+    ID: Copy + Eq,
 {
     let len = segs[0].len();
     assert!(len == segs[1].len());
@@ -144,10 +148,14 @@ pub fn get_best_rating_segments_of_2<ID>(segs: [DeltaSegment<Rating, Rating>; 2]
     match get_switch_point(segs[0], segs[1]) {
         None => ArrayVec::from_iter([subseg_by_max_start(segs, ids, 0, len)].iter().cloned()),
         Some(point) => {
-            ArrayVec::from_iter([subseg_by_max_start(segs, ids, 0, point),
-                                 subseg_by_max_start(segs, ids, point, len)]
-                                    .iter()
-                                    .cloned())
+            ArrayVec::from_iter(
+                [
+                    subseg_by_max_start(segs, ids, 0, point),
+                    subseg_by_max_start(segs, ids, point, len),
+                ]
+                .iter()
+                .cloned(),
+            )
         }
     }
 }
@@ -161,7 +169,8 @@ pub fn get_best_rating_segments_of_2<ID>(segs: [DeltaSegment<Rating, Rating>; 2]
 /// of all given spans have to be same, the sum of all returned segments is the
 /// orginal length.
 pub fn get_best_rating_segments_of_3<ID>(segs: [DeltaSegment<Rating, Rating>; 3], ids: [ID; 3]) -> ArrayVec<[(DeltaSegment<Rating, Rating>, ID); 3]>
-    where ID: Copy + Eq
+where
+    ID: Copy + Eq,
 {
     let seg1 = segs[0];
     let seg2 = segs[1];
@@ -193,10 +202,9 @@ pub fn get_best_rating_segments_of_3<ID>(segs: [DeltaSegment<Rating, Rating>; 3]
 
     let mut segments: ArrayVec<[(RatingSegment, ID); 3]> = ArrayVec::new();
 
-    let next_points = switch_points.iter()
-                                   .cloned()
-                                   .skip(1)
-                                   .chain(Some(len).into_iter());
+    let next_points = switch_points.iter().cloned().skip(1).chain(
+        Some(len).into_iter(),
+    );
     for (switch_point, next_point) in switch_points.iter().cloned().zip(next_points) {
         // get the best segment for the current index
         //  -> first compare their rating, in case they are the same, compare the deltas
@@ -226,7 +234,10 @@ pub fn get_best_rating_segments_of_3<ID>(segs: [DeltaSegment<Rating, Rating>; 3]
             }
         }
 
-        segments.push((current_best_segment.subseg(switch_point, next_point), current_id));
+        segments.push((
+            current_best_segment.subseg(switch_point, next_point),
+            current_id,
+        ));
     }
 
     assert!(segments.len() < 4);
@@ -241,7 +252,12 @@ pub fn get_best_rating_segments_of_3<ID>(segs: [DeltaSegment<Rating, Rating>; 3]
 fn get_switch_point(seg1: DeltaSegment<Rating, Rating>, seg2: DeltaSegment<Rating, Rating>) -> Option<u64> {
     let len = seg1.len();
     assert!(len == seg2.len());
-    let (f1, f2, l1, l2) = (seg1.first_value(), seg2.first_value(), seg1.last_value(), seg2.last_value());
+    let (f1, f2, l1, l2) = (
+        seg1.first_value(),
+        seg2.first_value(),
+        seg1.last_value(),
+        seg2.last_value(),
+    );
 
     if f1 <= f2 && l1 <= l2 {
         // segment1 is always smaller than segment2
@@ -297,10 +313,12 @@ mod tests {
         for test_segs in data_vec {
             let ids = [0, 1, 2];
             let best_segments: ArrayVec<[(RatingSegment, i32); 3]> = get_best_rating_segments_of_3(test_segs, ids);
-            validate_best_segments(test_segs.into_iter()
-                                            .map(|&seg| RatingBuffer::from(seg))
-                                            .collect(),
-                                   best_segments);
+            validate_best_segments(
+                test_segs.into_iter()
+                         .map(|&seg| RatingBuffer::from(seg))
+                         .collect(),
+                best_segments,
+            );
         }
     }
 
@@ -310,9 +328,7 @@ mod tests {
 
         // genrate test data
         let gen_segment = || get_random_rating_segment(-100..100, -100..100, 100..100);
-        let data_vec: Vec<_> = (0..2000)
-            .map(|_| [gen_segment(), gen_segment()])
-            .collect();
+        let data_vec: Vec<_> = (0..2000).map(|_| [gen_segment(), gen_segment()]).collect();
 
         for test_segs in data_vec {
             let ids = [0, 1];
@@ -320,10 +336,12 @@ mod tests {
             println!("Test segments: {:?}", test_segs);
             println!("Best segments: {:?}", best_segments);
             println!();
-            validate_best_segments(test_segs.into_iter()
-                                            .map(|&seg| RatingBuffer::from(seg))
-                                            .collect(),
-                                   best_segments);
+            validate_best_segments(
+                test_segs.into_iter()
+                         .map(|&seg| RatingBuffer::from(seg))
+                         .collect(),
+                best_segments,
+            );
         }
     }
 
@@ -334,10 +352,12 @@ mod tests {
         for seg in &segs {
             assert!(seg.len() == len);
         }
-        assert_eq!(len,
-                   best_segs.iter()
-                            .map(|&(ref rating_buffer, _)| rating_buffer.len())
-                            .sum());
+        assert_eq!(
+            len,
+            best_segs.iter()
+                     .map(|&(ref rating_buffer, _)| rating_buffer.len())
+                     .sum()
+        );
 
         // a vector of iterators (each representing a rating buffer)
         let mut iters: Vec<_> = segs.iter().map(|seg_ref| seg_ref.iter()).collect();
@@ -346,9 +366,7 @@ mod tests {
             // go through all values in this supposedly "best" segment
             for best_value_by_best_segment in RatingBuffer::from(best_seg).iter() {
                 // compute the maxium value by comparing all raings at the current position
-                let separate_ratings: Vec<Rating> = iters.iter_mut()
-                                                         .map(|iter| iter.next().unwrap())
-                                                         .collect();
+                let separate_ratings: Vec<Rating> = iters.iter_mut().map(|iter| iter.next().unwrap()).collect();
                 let real_max: Rating = separate_ratings.iter().cloned().max().unwrap();
 
                 // assert that the maximum rating really is the maximum rating

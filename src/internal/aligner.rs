@@ -103,11 +103,12 @@ enum Choice {
 impl Aligner {
     /// In each list no time span should intersect any other and both list are
     /// sorted by starting times.
-    pub fn new(list: Vec<TimeSpan>,
-               reference: Vec<TimeSpan>,
-               nopsplit_bonus_normalized: f64,
-               mut progress_handler_opt: Option<Box<ProgressHandler>>)
-               -> Option<Aligner> {
+    pub fn new(
+        list: Vec<TimeSpan>,
+        reference: Vec<TimeSpan>,
+        nopsplit_bonus_normalized: f64,
+        mut progress_handler_opt: Option<Box<ProgressHandler>>,
+    ) -> Option<Aligner> {
         if let Some(ref mut progress_handler) = progress_handler_opt {
             progress_handler.init(list.len() as i64);
         }
@@ -143,12 +144,12 @@ impl Aligner {
         assert!(start < end);
 
         Some(Aligner {
-                 list: list,
-                 reference: reference,
-                 buffer_timespan: TimeSpan::new(start, end),
-                 nosplit_bonus: Rating::nosplit_bonus(nopsplit_bonus_unnormalized),
-                 progress_handler_opt: progress_handler_opt,
-             })
+            list: list,
+            reference: reference,
+            buffer_timespan: TimeSpan::new(start, end),
+            nosplit_bonus: Rating::nosplit_bonus(nopsplit_bonus_unnormalized),
+            progress_handler_opt: progress_handler_opt,
+        })
     }
 
     pub fn get_start(&self) -> TimePoint {
@@ -208,7 +209,9 @@ impl Aligner {
         self.list
             .iter()
             .zip(time_span_starts.iter())
-            .map(|(&original_time_span, &new_start)| new_start - original_time_span.start())
+            .map(|(&original_time_span, &new_start)| {
+            new_start - original_time_span.start()
+        })
             .collect()
     }
 
@@ -217,11 +220,12 @@ impl Aligner {
     ///
     /// total_timespan_time: the sum of all timespan lengths NOT including the
     /// new span
-    fn align_new_span(&self,
-                      prev_rating_buffer: RatingBuffer,
-                      new_span: TimeSpan,
-                      optimal_startdiff_opt: Option<TimeDelta>)
-                      -> (RatingBuffer, TimepointBuffer) {
+    fn align_new_span(
+        &self,
+        prev_rating_buffer: RatingBuffer,
+        new_span: TimeSpan,
+        optimal_startdiff_opt: Option<TimeDelta>,
+    ) -> (RatingBuffer, TimepointBuffer) {
 
         assert!(prev_rating_buffer.len() == self.get_buffer_length());
 
@@ -242,25 +246,26 @@ impl Aligner {
     /// level, each N+1 row (giving the next N+1xU matrix) can be computed by
     /// the NxU matrix and the previous values on the N+1 row. I call this new
     /// matrix-row "lane".
-    fn get_next_lane<I1, I2, F>(&self,
-                                // will be ignored if `get_maxrat_segments` never return Choice::NosplitReposition
-                                optimal_startdiff: TimeDelta,
-                                reposition_rating_iter: I1,
-                                nosplit_rating_iter: I2,
-                                get_maxrat_segments: F)
-                                -> (RatingBuffer, TimepointBuffer)
-        where I1: Iterator<Item = RatingSegment>,
-              I2: Iterator<Item = OptionSegment<RatingSegment>>,
+    fn get_next_lane<I1, I2, F>(
+        &self,
+        // will be ignored if `get_maxrat_segments` never return Choice::NosplitReposition
+        optimal_startdiff: TimeDelta,
+        reposition_rating_iter: I1,
+        nosplit_rating_iter: I2,
+        get_maxrat_segments: F,
+    ) -> (RatingBuffer, TimepointBuffer)
+    where
+        I1: Iterator<Item = RatingSegment>,
+        I2: Iterator<Item = OptionSegment<RatingSegment>>,
 
-              // The three rating segemnts are the "reposition rating" the "fixed rating" and the "nosplit rating".
-              //
-              // The last parameter is the "absolute best choice" in the last loop. Because these absolute best (== one maxrat segment),
-              // choice is probably the same in the next loop, we can do optimizations with it.
-              F: Fn(RatingSegment,
-                    RatingSegment,
-                    Option<RatingSegment>,
-                    Option<Choice>)
-                    -> ArrayVec<[(RatingSegment, Choice); 3]>
+        // The three rating segemnts are the "reposition rating" the "fixed rating" and the "nosplit rating".
+        //
+        // The last parameter is the "absolute best choice" in the last loop. Because these absolute best (== one maxrat segment),
+        // choice is probably the same in the next loop, we can do optimizations with it.
+        F: Fn(RatingSegment,
+           RatingSegment,
+           Option<RatingSegment>,
+           Option<Choice>) -> ArrayVec<[(RatingSegment, Choice); 3]>,
     {
 
         let mut rating_builder = DeltaBufferBuilder::<Rating, Rating>::new();
@@ -284,10 +289,12 @@ impl Aligner {
 
             let fixed_rating_seg = DeltaSegment::new(past_max.rating, Rating::zero(), reposition_rating_seg.len());
 
-            let maxrat_segs = get_maxrat_segments(reposition_rating_seg,
-                                                  fixed_rating_seg,
-                                                  nosplit_reposition_rating,
-                                                  last_absolute_best_choice);
+            let maxrat_segs = get_maxrat_segments(
+                reposition_rating_seg,
+                fixed_rating_seg,
+                nosplit_reposition_rating,
+                last_absolute_best_choice,
+            );
 
             last_absolute_best_choice = if maxrat_segs.len() == 1 {
                 Some(maxrat_segs[0].1)
@@ -308,9 +315,11 @@ impl Aligner {
                     Choice::Fixed => (past_max.location, TimeDelta::zero()),
                 };
 
-                let new_spanstart_segment = DeltaSegment::new(spanstart_seg_timepoint,
-                                                              spanstart_seg_delta,
-                                                              maxrat_seg.len());
+                let new_spanstart_segment = DeltaSegment::new(
+                    spanstart_seg_timepoint,
+                    spanstart_seg_delta,
+                    maxrat_seg.len(),
+                );
 
                 // add the best rating and the associated spanstarts to the buffer builders
                 rating_builder.add_segment(maxrat_seg);
@@ -335,37 +344,45 @@ impl Aligner {
     }
 
     fn get_next_lane_without_nosplit(&self, reposition_rating_buffer: &RatingBuffer) -> (RatingBuffer, TimepointBuffer) {
-        self.get_next_lane(TimeDelta::zero(), // ignored
-                           reposition_rating_buffer.iter_segments().cloned(),
-                           once(OptionSegment::NoneSeg::<RatingSegment>(self.get_buffer_length())),
+        self.get_next_lane(
+            TimeDelta::zero(), // ignored
+            reposition_rating_buffer.iter_segments().cloned(),
+            once(OptionSegment::NoneSeg::<RatingSegment>(
+                self.get_buffer_length(),
+            )),
 
-                           // do not compare with nosplit segment
-                           Self::get_segments_and_choices_with_nosplit)
+            // do not compare with nosplit segment
+            Self::get_segments_and_choices_with_nosplit,
+        )
 
     }
 
-    fn get_segments_and_choices_without_nosplit(reposition_rating_seg: RatingSegment,
-                                                fixed_rating_seg: RatingSegment,
-                                                _: Option<Choice>)
-                                                -> ArrayVec<[(RatingSegment, Choice); 3]> {
+    fn get_segments_and_choices_without_nosplit(
+        reposition_rating_seg: RatingSegment,
+        fixed_rating_seg: RatingSegment,
+        _: Option<Choice>,
+    ) -> ArrayVec<[(RatingSegment, Choice); 3]> {
 
         let compared_segs = [reposition_rating_seg, fixed_rating_seg];
         let corresponding_choices = [Choice::Reposition, Choice::Fixed];
         get_best_rating_segments_of_2(compared_segs, corresponding_choices)
     }
 
-    fn get_segments_and_choices_with_nosplit(reposition_rating_seg: RatingSegment,
-                                             fixed_rating_seg: RatingSegment,
-                                             nosplit_rating_seg_opt: Option<RatingSegment>,
-                                             last_absolute_best_choice: Option<Choice>)
-                                             -> ArrayVec<[(RatingSegment, Choice); 3]> {
+    fn get_segments_and_choices_with_nosplit(
+        reposition_rating_seg: RatingSegment,
+        fixed_rating_seg: RatingSegment,
+        nosplit_rating_seg_opt: Option<RatingSegment>,
+        last_absolute_best_choice: Option<Choice>,
+    ) -> ArrayVec<[(RatingSegment, Choice); 3]> {
 
         let nosplit_rating_seg = match nosplit_rating_seg_opt {
             Some(x) => x,
             None => {
-                return Self::get_segments_and_choices_without_nosplit(reposition_rating_seg,
-                                                                      fixed_rating_seg,
-                                                                      last_absolute_best_choice);
+                return Self::get_segments_and_choices_without_nosplit(
+                    reposition_rating_seg,
+                    fixed_rating_seg,
+                    last_absolute_best_choice,
+                );
             }
         };
 
@@ -376,16 +393,20 @@ impl Aligner {
         match last_absolute_best_choice {
             Some(Choice::Reposition) => {
                 if reposition_rating_seg.is_greatequal(nosplit_rating_seg) && reposition_rating_seg.is_greatequal(fixed_rating_seg) {
-                    return ArrayVec::from_iter([(reposition_rating_seg, Choice::Reposition)]
-                                                   .into_iter()
-                                                   .cloned());
+                    return ArrayVec::from_iter(
+                        [(reposition_rating_seg, Choice::Reposition)]
+                            .into_iter()
+                            .cloned(),
+                    );
                 }
             }
             Some(Choice::NosplitReposition) => {
                 if nosplit_rating_seg.is_greatequal(reposition_rating_seg) && nosplit_rating_seg.is_greatequal(fixed_rating_seg) {
-                    return ArrayVec::from_iter([(nosplit_rating_seg, Choice::NosplitReposition)]
-                                                   .into_iter()
-                                                   .cloned());
+                    return ArrayVec::from_iter(
+                        [(nosplit_rating_seg, Choice::NosplitReposition)]
+                            .into_iter()
+                            .cloned(),
+                    );
                 }
             }
             Some(Choice::Fixed) => {
@@ -409,15 +430,17 @@ impl Aligner {
         // This is the rating for a nosplit alignment. To achive that "x -
         // space_to_next" we add a dummy segment to the front.
         let dummy_segment = OptionSegment::NoneSeg(optimal_startdiff.into());
-        let bonus_segments_iter =
-            reposition_rating_buffer.iter_segments()
-                                    .map(|&x| OptionSegment::SomeSeg(x + self.nosplit_bonus));
+        let bonus_segments_iter = reposition_rating_buffer.iter_segments().map(|&x| {
+            OptionSegment::SomeSeg(x + self.nosplit_bonus)
+        });
         let shifted_bonus_segments_iter = once(dummy_segment).chain(bonus_segments_iter);
 
-        self.get_next_lane(optimal_startdiff,
-                           reposition_rating_buffer.iter_segments().cloned(),
-                           shifted_bonus_segments_iter,
-                           Self::get_segments_and_choices_with_nosplit)
+        self.get_next_lane(
+            optimal_startdiff,
+            reposition_rating_buffer.iter_segments().cloned(),
+            shifted_bonus_segments_iter,
+            Self::get_segments_and_choices_with_nosplit,
+        )
     }
 
     /// Requires "start1 <= start2". Returns the compressed rating vector for
@@ -480,8 +503,9 @@ impl Aligner {
                          .collect();
 
             // take the first next timepoint
-            let next_changepoint_opt = next_timepoints.into_iter()
-                                                      .min_by_key::<TimePoint, _>(|a| (a.1).1);
+            let next_changepoint_opt = next_timepoints.into_iter().min_by_key::<TimePoint, _>(
+                |a| (a.1).1,
+            );
 
             // because each original array had the same length, all iterators should end at
             // the same time
@@ -525,9 +549,10 @@ impl Aligner {
 
         match (first_timepoint, last_timepoint) {
             (Some(first_timepoint), Some(_)) => {
-                builder.get_buffer()
-                       .with_new_borders(i64::from(start1 - first_timepoint),
-                                         i64::from(start2 - start1))
+                builder.get_buffer().with_new_borders(
+                    i64::from(start1 - first_timepoint),
+                    i64::from(start2 - start1),
+                )
             }
             _ => unreachable!(), // lists in aligner should be non-empty
         }
@@ -549,11 +574,10 @@ impl Aligner {
             let rating: Rating = self.reference
                                      .iter()
                                      .map(|ref_ts| {
-                                              let num_overlapping_segments: i64 =
-                                                  ref_ts.get_overlapping_length(span).into();
-                                              let single_segment_rating = Rating::from_overlapping_spans(span.len(), ref_ts.len());
-                                              single_segment_rating * num_overlapping_segments
-                                          })
+                let num_overlapping_segments: i64 = ref_ts.get_overlapping_length(span).into();
+                let single_segment_rating = Rating::from_overlapping_spans(span.len(), ref_ts.len());
+                single_segment_rating * num_overlapping_segments
+            })
                                      .sum();
 
             rating_buffer_builder.add_segment(RatingSegment::new(rating, Rating::zero(), 1));
@@ -601,14 +625,20 @@ mod tests {
         for _ in 0..30 {
             let aligner = get_dummy_aligner();
             let len: i64 = (rng.next_u32() % 100) as i64;
-            let rating_buffer1 = aligner.get_compressed_overlapping_ratings(aligner.get_start(),
-                                                                            aligner.get_end(),
-                                                                            TimeDelta::one() * len);
-            let rating_buffer2 = aligner.get_compressed_overlapping_ratings_slow(aligner.get_start(),
-                                                                                 aligner.get_end(),
-                                                                                 TimeDelta::one() * len);
-            assert_eq!(rating_buffer1.iter().collect::<Vec<_>>(),
-                       rating_buffer2.iter().collect::<Vec<_>>());
+            let rating_buffer1 = aligner.get_compressed_overlapping_ratings(
+                aligner.get_start(),
+                aligner.get_end(),
+                TimeDelta::one() * len,
+            );
+            let rating_buffer2 = aligner.get_compressed_overlapping_ratings_slow(
+                aligner.get_start(),
+                aligner.get_end(),
+                TimeDelta::one() * len,
+            );
+            assert_eq!(
+                rating_buffer1.iter().collect::<Vec<_>>(),
+                rating_buffer2.iter().collect::<Vec<_>>()
+            );
         }
     }
 

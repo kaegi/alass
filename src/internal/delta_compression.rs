@@ -75,7 +75,8 @@ impl<T, D> DeltaSegment<T, D> {
 
 
     pub fn delta(&self) -> D
-        where D: Copy
+    where
+        D: Copy,
     {
         self.delta
     }
@@ -85,15 +86,17 @@ impl<T, D> DeltaSegment<T, D> {
     }
 
     pub fn is_decreasing(&self) -> bool
-        where D: Copy + Zero + PartialOrd
+    where
+        D: Copy + Zero + PartialOrd,
     {
         self.delta() < D::zero()
     }
 }
 
 impl<T, D> DeltaSegment<T, D>
-    where T: Add<D, Output = T> + Copy,
-          D: Mul<i64, Output = D> + Copy
+where
+    T: Add<D, Output = T> + Copy,
+    D: Mul<i64, Output = D> + Copy,
 {
     pub fn first_value(&self) -> T {
         self.start
@@ -120,16 +123,19 @@ impl<T, D> DeltaSegment<T, D>
     }
 
     pub fn is_greatequal(&self, other: DeltaSegment<T, D>) -> bool
-        where T: Ord
+    where
+        T: Ord,
     {
         self.first_value() >= other.first_value() && self.last_value() >= other.last_value()
     }
 
     pub fn split_to_end(&self, from: u64) -> DeltaSegment<T, D> {
         assert!(from <= self.len());
-        DeltaSegment::new(self.value_at_index(from as i64),
-                          self.delta(),
-                          self.len() - from as u64)
+        DeltaSegment::new(
+            self.value_at_index(from as i64),
+            self.delta(),
+            self.len() - from as u64,
+        )
     }
 
     pub fn split_from_begin_to(&self, to: u64) -> DeltaSegment<T, D> {
@@ -139,8 +145,9 @@ impl<T, D> DeltaSegment<T, D>
 }
 
 impl<T, D> Add<D> for DeltaSegment<T, D>
-    where T: Add<D, Output = T> + Copy,
-          D: Mul<i64, Output = D> + Copy
+where
+    T: Add<D, Output = T> + Copy,
+    D: Mul<i64, Output = D> + Copy,
 {
     type Output = DeltaSegment<T, D>;
     fn add(self, rhs: D) -> DeltaSegment<T, D> {
@@ -157,8 +164,9 @@ pub struct DeltaBuffer<T, D> {
 }
 
 impl<T, D> From<DeltaSegment<T, D>> for DeltaBuffer<T, D>
-    where T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
-          D: Mul<i64, Output = D> + Copy + Eq
+where
+    T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
+    D: Mul<i64, Output = D> + Copy + Eq,
 {
     fn from(seg: DeltaSegment<T, D>) -> DeltaBuffer<T, D> {
         DeltaBuffer::init_with_one_segment(seg.first_value(), seg.delta(), seg.len())
@@ -166,8 +174,9 @@ impl<T, D> From<DeltaSegment<T, D>> for DeltaBuffer<T, D>
 }
 
 impl<T, D, I: Iterator<Item = DeltaSegment<T, D>>> From<I> for DeltaBuffer<T, D>
-    where T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
-          D: Mul<i64, Output = D> + Copy + Eq
+where
+    T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
+    D: Mul<i64, Output = D> + Copy + Eq,
 {
     fn from(i: I) -> DeltaBuffer<T, D> {
         let mut builder = DeltaBufferBuilder::new();
@@ -179,8 +188,9 @@ impl<T, D, I: Iterator<Item = DeltaSegment<T, D>>> From<I> for DeltaBuffer<T, D>
 }
 
 impl<T, D> DeltaBuffer<T, D>
-    where T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
-          D: Mul<i64, Output = D> + Copy + Eq
+where
+    T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
+    D: Mul<i64, Output = D> + Copy + Eq,
 {
     pub fn new() -> DeltaBuffer<T, D> {
         DeltaBuffer {
@@ -205,7 +215,8 @@ impl<T, D> DeltaBuffer<T, D>
     /// from the current data, which get
     /// filled left and right with the first/last value of the entire buffer.
     pub fn with_new_borders(&self, new_start: i64, new_length: i64) -> DeltaBuffer<T, D>
-        where D: Zero
+    where
+        D: Zero,
     {
         // XXX: do not use intermediate buffer? (measure performance impact first)
         assert!(new_length >= 0);
@@ -226,15 +237,15 @@ impl<T, D> DeltaBuffer<T, D>
     }
 
     pub fn first_value(&self) -> Option<T> {
-        self.data
-            .first()
-            .map(|&first_segment| first_segment.first_value())
+        self.data.first().map(|&first_segment| {
+            first_segment.first_value()
+        })
     }
 
     pub fn last_value(&self) -> Option<T> {
-        self.data
-            .last()
-            .map(|&last_segment| last_segment.last_value())
+        self.data.last().map(
+            |&last_segment| last_segment.last_value(),
+        )
     }
 
     pub fn extended_front(&self, seg: DeltaSegment<T, D>) -> DeltaBuffer<T, D> {
@@ -282,8 +293,9 @@ impl<T, D> DeltaBuffer<T, D>
 
     #[cfg(test)]
     pub fn iter(&self) -> DeltaBufferIter<T, D>
-        where T: Add<D, Output = T> + Copy,
-              D: Mul<i64, Output = D> + Copy
+    where
+        T: Add<D, Output = T> + Copy,
+        D: Mul<i64, Output = D> + Copy,
     {
         DeltaBufferIter { reader: DeltaBufferReader::new(self, TimePoint::from(0)) }
     }
@@ -294,18 +306,24 @@ impl<T, D> DeltaBuffer<T, D>
 
     /// Both Buffers have to have same total length.
     pub fn combine_fast<F>(&self, other: &DeltaBuffer<T, D>, mut f: F) -> DeltaBuffer<T, D>
-        where F: FnMut(T, D, T, D) -> (T, D)
+    where
+        F: FnMut(T, D, T, D) -> (T, D),
     {
         let mut builder = DeltaBufferBuilder::new();
-        for (seg1, seg2) in CombinedSegmentIterator::new(self.iter_segments().cloned(),
-                                                         other.iter_segments().cloned()) {
+        for (seg1, seg2) in CombinedSegmentIterator::new(
+            self.iter_segments().cloned(),
+            other.iter_segments().cloned(),
+        )
+        {
             let seglen = seg1.len();
             assert!(seg2.len() == seglen);
 
-            let (new_t, new_d) = f(seg1.first_value(),
-                                   seg1.delta(),
-                                   seg2.first_value(),
-                                   seg2.delta());
+            let (new_t, new_d) = f(
+                seg1.first_value(),
+                seg1.delta(),
+                seg2.first_value(),
+                seg2.delta(),
+            );
 
             // this will handle optimizations where we join two segments
             builder.add_segment(DeltaSegment::new(new_t, new_d, seglen));
@@ -315,26 +333,32 @@ impl<T, D> DeltaBuffer<T, D>
     }
 
     pub fn combined_add(&self, other: &DeltaBuffer<T, D>) -> DeltaBuffer<T, D>
-        where T: Add<T, Output = T>,
-              D: Add<D, Output = D>
+    where
+        T: Add<T, Output = T>,
+        D: Add<D, Output = D>,
     {
         self.combine_fast(other, |t1: T, d1: D, t2: T, d2: D| (t1 + t2, d1 + d2))
     }
 
     #[allow(dead_code)]
     pub fn write_to_file(&self, path: String) -> ::std::io::Result<()>
-        where D: Display,
-              T: Display
+    where
+        D: Display,
+        T: Display,
     {
         use std::fs::File;
         use std::io::prelude::*;
         let mut f = File::create(path)?;
         for segments in &self.data {
-            f.write_all(format!("{}, {}, {}\n",
-                                segments.first_value(),
-                                segments.delta(),
-                                segments.len())
-                            .as_bytes())?;
+            f.write_all(
+                format!(
+                    "{}, {}, {}\n",
+                    segments.first_value(),
+                    segments.delta(),
+                    segments.len()
+                )
+                .as_bytes(),
+            )?;
         }
         Ok(())
     }
@@ -357,9 +381,11 @@ mod tests {
         let mut fulllen = 0;
         for _ in 0..len {
             let seglen = rng.next_u32() as u64 % 100 + 1;
-            builder.add_segment(DeltaSegment::new(Rating::from(rng.next_u32() as i64 % 2000 - 1000),
-                                                  Rating::from(rng.next_u32() as i64 % 2000 - 1000),
-                                                  seglen));
+            builder.add_segment(DeltaSegment::new(
+                Rating::from(rng.next_u32() as i64 % 2000 - 1000),
+                Rating::from(rng.next_u32() as i64 % 2000 - 1000),
+                seglen,
+            ));
             fulllen += seglen;
         }
         let buffer = builder.get_buffer();
@@ -421,8 +447,9 @@ pub struct DeltaBufferBuilder<T, D> {
 }
 
 impl<T, D> DeltaBufferBuilder<T, D>
-    where T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
-          D: Mul<i64, Output = D> + Copy + Eq
+where
+    T: Add<D, Output = T> + Sub<T, Output = D> + Eq + Copy,
+    D: Mul<i64, Output = D> + Copy + Eq,
 {
     pub fn new() -> DeltaBufferBuilder<T, D> {
         DeltaBufferBuilder { inner: DeltaBuffer::new() }
@@ -454,13 +481,11 @@ impl<T, D> DeltaBufferBuilder<T, D>
             }
         }
 
-        self.inner
-            .data
-            .push(DeltaSegment {
-                      delta: d,
-                      start: t,
-                      len: len,
-                  });
+        self.inner.data.push(DeltaSegment {
+            delta: d,
+            start: t,
+            len: len,
+        });
     }
 
     pub fn add_buffer_from(&mut self, index: u64, buffer: &DeltaBuffer<T, D>) {
@@ -518,8 +543,9 @@ pub struct DeltaBufferReader<'a, T: 'a, D: 'a> {
 }
 
 impl<'a, T, D> DeltaBufferReader<'a, T, D>
-    where T: Add<D, Output = T> + Copy,
-          D: Mul<i64, Output = D> + Copy
+where
+    T: Add<D, Output = T> + Copy,
+    D: Mul<i64, Output = D> + Copy,
 {
     pub fn new(buffer: &DeltaBuffer<T, D>, first_timepoint: TimePoint) -> DeltaBufferReader<T, D> {
         let iter = buffer.data.iter();
@@ -537,11 +563,12 @@ impl<'a, T, D> DeltaBufferReader<'a, T, D>
 
     pub fn read_by_delta(&mut self, d: TimeDelta) -> T {
         assert!(d >= TimeDelta::zero());
-        self.read_by_delta_safe(d)
-            .unwrap_or_else(|| {
-                                panic!("DeltaBuffer::read_by_delta(): out of bounds access (delta is {})",
-                                       d)
-                            })
+        self.read_by_delta_safe(d).unwrap_or_else(|| {
+            panic!(
+                "DeltaBuffer::read_by_delta(): out of bounds access (delta is {})",
+                d
+            )
+        })
     }
 
     fn read_by_delta_safe(&mut self, d: TimeDelta) -> Option<T> {
@@ -567,9 +594,9 @@ impl<'a, T, D> DeltaBufferReader<'a, T, D>
     #[cfg(test)]
     pub fn read_current_safe(&mut self) -> Option<T> {
         let query_rest = self.query_rest;
-        self.iter
-            .peek()
-            .map(|segment| segment.start + segment.delta * query_rest as i64)
+        self.iter.peek().map(|segment| {
+            segment.start + segment.delta * query_rest as i64
+        })
     }
 }
 
@@ -583,8 +610,9 @@ pub struct DeltaBufferIter<'a, T: 'a, D: 'a> {
 
 #[cfg(test)]
 impl<'a, T, D> Iterator for DeltaBufferIter<'a, T, D>
-    where T: Add<D, Output = T> + Copy,
-          D: Mul<i64, Output = D> + Copy
+where
+    T: Add<D, Output = T> + Copy,
+    D: Mul<i64, Output = D> + Copy,
 {
     type Item = T;
 
@@ -605,8 +633,9 @@ pub trait Segment {
 }
 
 impl<T, D> Segment for DeltaSegment<T, D>
-    where T: Add<D, Output = T> + Copy,
-          D: Mul<i64, Output = D> + Copy
+where
+    T: Add<D, Output = T> + Copy,
+    D: Mul<i64, Output = D> + Copy,
 {
     type Item = DeltaSegment<T, D>;
 
@@ -625,10 +654,11 @@ impl<T, D> Segment for DeltaSegment<T, D>
 /// the next beginning/end
 /// of a segment in either buffer.
 pub struct CombinedSegmentIterator<I1, I2, K1, K2>
-    where I1: Iterator<Item = K1>,
-          I2: Iterator<Item = K2>,
-          K1: Segment,
-          K2: Segment
+where
+    I1: Iterator<Item = K1>,
+    I2: Iterator<Item = K2>,
+    K1: Segment,
+    K2: Segment,
 {
     pos1: u64,
     pos2: u64,
@@ -637,10 +667,11 @@ pub struct CombinedSegmentIterator<I1, I2, K1, K2>
 }
 
 impl<I1, I2, K1, K2> CombinedSegmentIterator<I1, I2, K1, K2>
-    where I1: Iterator<Item = K1>,
-          I2: Iterator<Item = K2>,
-          K1: Segment + Copy,
-          K2: Segment + Copy
+where
+    I1: Iterator<Item = K1>,
+    I2: Iterator<Item = K2>,
+    K1: Segment + Copy,
+    K2: Segment + Copy,
 {
     pub fn new(i1: I1, i2: I2) -> CombinedSegmentIterator<I1, I2, K1, K2> {
         CombinedSegmentIterator {
@@ -653,10 +684,11 @@ impl<I1, I2, K1, K2> CombinedSegmentIterator<I1, I2, K1, K2>
 }
 
 impl<I1, I2, K1, K2> Iterator for CombinedSegmentIterator<I1, I2, K1, K2>
-    where I1: Iterator<Item = K1>,
-          I2: Iterator<Item = K2>,
-          K1: Segment + Copy,
-          K2: Segment + Copy
+where
+    I1: Iterator<Item = K1>,
+    I2: Iterator<Item = K2>,
+    K1: Segment + Copy,
+    K2: Segment + Copy,
 {
     type Item = (K1::Item, K2::Item);
 
@@ -710,7 +742,8 @@ pub enum OptionSegment<K: Segment> {
 }
 
 impl<K> Segment for OptionSegment<K>
-    where K: Segment
+where
+    K: Segment,
 {
     type Item = Option<K::Item>;
 

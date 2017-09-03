@@ -37,10 +37,10 @@ fn prepare_spans_sorted(overlapping: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize
         mapping[i] = i2;
     }
 
-    (sorted_overlapping.into_iter()
-                       .map(|(_, ts)| ts)
-                       .collect(),
-     mapping)
+    (
+        sorted_overlapping.into_iter().map(|(_, ts)| ts).collect(),
+        mapping,
+    )
 }
 
 /// Returns a smaller list of non-overlapping time spans and a vector with
@@ -122,10 +122,10 @@ fn prepare_spans_nonzero(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
 
 
         indices.push(if merge_with_prev {
-                         new_index - 1
-                     } else {
-                         new_index
-                     });
+            new_index - 1
+        } else {
+            new_index
+        });
     }
 
     (non_zero_spans, indices)
@@ -136,9 +136,11 @@ pub fn prepare_time_spans(v: Vec<TimeSpan>) -> (Vec<TimeSpan>, Vec<usize>) {
         return (Vec::new(), Vec::new());
     }
 
-    let operations = [prepare_spans_sorted,
-                      prepare_spans_non_overlapping,
-                      prepare_spans_nonzero];
+    let operations = [
+        prepare_spans_sorted,
+        prepare_spans_non_overlapping,
+        prepare_spans_nonzero,
+    ];
     let mut mapping: Vec<usize> = (0..v.len()).collect();
     let mut result = v;
     for &operation in &operations {
@@ -188,10 +190,10 @@ mod tests {
                            .cloned()
                            .zip(non_overlapping.iter().cloned().skip(1))
                            .inspect(|&(last, current)| {
-                                        assert!(last.start() <= last.end());
-                                        assert!(last.end() <= current.start());
-                                        assert!(current.start() <= current.end());
-                                    })
+                assert!(last.start() <= last.end());
+                assert!(last.end() <= current.start());
+                assert!(current.start() <= current.end());
+            })
                            .count();
 
             // test mapping from "overlapping -> non-overlapping"
