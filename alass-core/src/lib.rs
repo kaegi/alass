@@ -1,4 +1,4 @@
-// This file is part of the Rust library and binary `aligner`.
+// This file is part of the Rust library and binary `alass`.
 //
 // Copyright (C) 2017 kaegi
 //
@@ -15,36 +15,71 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
-#![deny(missing_docs,
-        missing_debug_implementations, missing_copy_implementations,
-        trivial_casts,
-        unsafe_code,
-        unstable_features,
-        unused_import_braces, unused_qualifications)]
+#![deny(
+    //missing_docs,
+    missing_debug_implementations,
+    //missing_copy_implementations,
+    trivial_casts,
+    //unsafe_code,
+    unstable_features,
+    unused_import_braces,
+    unused_qualifications
+)]
 #![allow(unknown_lints)] // for clippy
 
-//! `aligner` takes two timespan arrays (e.g. from two subtitle files) and
+//! `alass` takes two timespan arrays (e.g. from two subtitle files) and
 //! tries to align the `incorrect` subtitles
 //! to the `reference` subtitle. It automatically fixes offsets and
 //! introduces/removes breaks between subtitles in the `incorrect`
 //! subtitle to achive the best alignment.
 
+extern crate arrayvec;
 #[cfg(test)]
 extern crate rand;
-extern crate arrayvec;
 
-// for internal use (in sub-modules)
-mod internal;
+mod alass;
+mod rating_type;
+mod segments;
+mod statistics;
+mod time_types;
+mod timespan_ops;
 
-// for external use (in other crates)
-
-use internal::{Aligner, prepare_time_spans};
-pub use internal::{ProgressHandler, TimeDelta, TimePoint, TimeSpan};
+use crate::alass::Aligner;
+pub use crate::alass::ProgressHandler;
+pub use crate::statistics::Statistics;
+pub use crate::time_types::{TimeDelta, TimePoint, TimeSpan};
+use crate::timespan_ops::prepare_time_spans;
 
 // for use in this module (in lib.rs)
 use std::vec::from_elem;
 
+pub fn align_nosplit(
+    list: Vec<TimeSpan>,
+    reference: Vec<TimeSpan>,
+    mut progress_handler_opt: Option<Box<ProgressHandler>>,
+    statistics_opt: Option<Statistics>,
+) -> TimeDelta {
+    if let Some(p) = progress_handler_opt.as_mut() {
+        p.init(1);
+    }
+
+    let (list_nonoverlapping, _) = prepare_time_spans(list.clone());
+    let (ref_nonoverlapping, _) = prepare_time_spans(reference.clone());
+
+    if list_nonoverlapping.is_empty() || ref_nonoverlapping.is_empty() {
+        return TimeDelta::zero();
+    }
+
+    let alass = Aligner::new(list_nonoverlapping, ref_nonoverlapping, statistics_opt);
+
+    if let Some(p) = progress_handler_opt.as_mut() {
+        p.inc();
+        p.finish();
+    }
+
+    // get deltas for non-overlapping timespans
+    return alass.align_constant_delta();
+}
 
 /// Matches an `incorrect` subtitle list to a `reference` subtitle list.
 ///
@@ -56,14 +91,20 @@ use std::vec::from_elem;
 /// so only one/the best offset is applied to ALL lines. The most common useful values are in the
 /// 0.2 to 0.01 range.
 ///
-/// Especially for larger subtitles(e.g. 1 hour in millisecond resolution and 1000 subtitle lines) this
+/// Especially for larger subtitles (e.g. 1 hour in millisecond resolution and 1000 subtitle lines) this
 /// process might take some seconds. To provide user feedback one can pass a `ProgressHandler` to
 /// this function.
+///
+/// If you want to increase the speed of the alignment process, you can use the `speed_optimization`
+/// parameter. This value can be between `0` and `+inf`, altough after `10` the accuracy
+/// will have greatly degraded. It is recommended to supply a value around `5`.
 pub fn align(
     list: Vec<TimeSpan>,
     reference: Vec<TimeSpan>,
     split_penalty_normalized: f64,
-    progress_handler: Option<Box<ProgressHandler>>,
+    speed_optimization: Option<f64>,
+    progress_handler_opt: Option<Box<ProgressHandler>>,
+    statistics_opt: Option<Statistics>,
 ) -> Vec<TimeDelta> {
     let (list_nonoverlapping, list_indices) = prepare_time_spans(list.clone());
     let (ref_nonoverlapping, _) = prepare_time_spans(reference.clone());
@@ -72,29 +113,19 @@ pub fn align(
         return from_elem(TimeDelta::zero(), list.len());
     }
 
-    let list_len = list_nonoverlapping.len();
-    let aligner_opt = Aligner::new(
-        list_nonoverlapping,
-        ref_nonoverlapping,
-        split_penalty_normalized,
-        progress_handler,
-    );
+    let alass = Aligner::new(list_nonoverlapping, ref_nonoverlapping, statistics_opt);
 
     // get deltas for non-overlapping timespans
-    let deltas = match aligner_opt {
-        Some(mut aligner) => aligner.align_all_spans(),
-        None => (0..list_len).map(|_| TimeDelta::zero()).collect(),
-    };
+    let deltas = alass.align_with_splits(progress_handler_opt, split_penalty_normalized, speed_optimization);
 
     // get deltas for overlapping timspan-list
     list_indices.into_iter().map(|i| deltas[i]).collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use internal::{TimePoint, prepare_time_spans};
+    use crate::{prepare_time_spans, TimePoint};
     use rand;
     use rand::Rng;
 
@@ -138,7 +169,7 @@ mod tests {
 
     /// All test time span sequences (some are predefined some are random).
     pub fn get_test_time_spans() -> Vec<Vec<TimeSpan>> {
-        (0..100)
+        (0..1000)
             .map(|_| generate_random_time_spans())
             .chain(predefined_time_spans().into_iter())
             .collect()

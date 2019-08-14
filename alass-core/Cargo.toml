@@ -1,0 +1,30 @@
+[package]
+name = "alass-core"
+version = "1.0.0"
+authors = ["kaegi <kaegi.dev@gmail.com>"]
+description = "Automatically corrects subtitle timings given a second correct subtitle (binary)"
+repository = "https://github.com/kaegi/alass/alass-core"
+documentation = "https://docs.rs/alass-core"
+readme = "README.md"
+keywords = ["subtitle", "align", "automatic", "api", "tool"]
+license = "GPL-3.0"
+edition = "2018"
+
+[features]
+default = []
+
+# this enables writing of statistics but incurs a performance penalty
+# of 15% even when not used by the user of the program
+statistics = []
+
+# In nosplit mode, the most expensive operation is sorting of sorted
+# vectors. In runtime analysis, using a heap-sort-like algorithm
+# is more performant than assuming a large unsorted array. In
+# tests it is only half as fast. (1s vs 2s)
+nosplit-heap-sort = []
+
+[dependencies]
+arrayvec = "0.4.0"
+
+[dev-dependencies]
+rand = "0.3"

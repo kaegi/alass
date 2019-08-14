@@ -1,29 +1,6 @@
-[package]
-name = "aligner"
-version = "0.1.6"
-authors = ["kaegi <kaegi.dev@gmail.com>"]
-description = "Automatically corrects subtitle timings given a second correct subtitle"
-repository = "https://github.com/kaegi/aligner"
-documentation = "https://docs.rs/aligner"
-readme = "README.md"
-keywords = ["subtitle", "aligner", "automatic", "api", "tool"]
-license = "GPL-3.0"
+[workspace]
 
-
-[dependencies]
-arrayvec = "0.4.0"
-
-# dependencies of binary
-clap = "2.22.2"
-error-chain = "~0.10.0"
-pbr = "1.0.0-alpha.2"
-subparse = "0.3.0"
-encoding = "0.2.33"
-
-[[bin]]
-doc = false
-name = "aligner"
-
-
-[dev-dependencies]
-rand = "0.3"
+members = [
+    "alass-core",
+    "alass-cli"
+]

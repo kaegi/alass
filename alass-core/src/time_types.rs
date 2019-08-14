@@ -1,4 +1,4 @@
-// This file is part of the Rust library and binary `aligner`.
+// This file is part of the Rust library and binary `alass`.
 //
 // Copyright (C) 2017 kaegi
 //
@@ -15,16 +15,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
 use std;
-use std::cmp::{Ordering, max, min};
+use std::cmp::{max, min, Ordering};
 use std::ops::*;
 
 /// Implements conversion to integer variables for TimeDelta and TimePoint.
 macro_rules! impl_from {
     ($f:ty, $t:ty) => {
-        impl From<$f> for $t { fn from(t: $f) -> $t { t.0 as $t } }
-    }
+        impl From<$f> for $t {
+            fn from(t: $f) -> $t {
+                t.0 as $t
+            }
+        }
+    };
 }
 
 /// This struct represents a time difference between two `TimePoints`.
@@ -42,8 +45,27 @@ impl TimeDelta {
     pub fn one() -> TimeDelta {
         TimeDelta(1)
     }
-}
 
+    /// Create time delta as "TimeDelta::one() * v".
+    pub fn from_i64(v: i64) -> TimeDelta {
+        TimeDelta(v)
+    }
+
+    /// Return time difference as f64.
+    pub fn as_f64(&self) -> f64 {
+        self.0 as f64
+    }
+
+    /// Return time difference as f64.
+    pub fn as_f32(&self) -> f32 {
+        self.0 as f32
+    }
+
+    /// Return time difference as i64.
+    pub fn as_i64(&self) -> i64 {
+        self.0 as i64
+    }
+}
 
 impl_from!(TimeDelta, i32);
 impl_from!(TimeDelta, u32);
@@ -79,7 +101,6 @@ impl AddAssign<TimeDelta> for TimeDelta {
         self.0 += rhs.0;
     }
 }
-
 
 impl Sub<TimeDelta> for TimeDelta {
     type Output = TimeDelta;
@@ -140,7 +161,7 @@ impl Neg for TimeDelta {
 /// The only way to create a new `TimePoint` is with `TimePoint::from({i64})`.
 ///
 /// ```
-/// use aligner::TimePoint;
+/// use alass_core::TimePoint;
 ///
 /// let p = TimePoint::from(10);
 ///
@@ -152,13 +173,24 @@ impl Neg for TimeDelta {
 #[derive(Copy, Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct TimePoint(i64);
 
+impl TimePoint {
+    /// Returns a f32 for the given time point.
+    pub fn as_f32(self) -> f32 {
+        self.0 as f32
+    }
+
+    /// Returns a i64 for the given time point.
+    pub fn as_i64(self) -> i64 {
+        self.0 as i64
+    }
+}
+
 impl From<i64> for TimePoint {
     fn from(f: i64) -> TimePoint {
         TimePoint(f)
     }
 }
 impl_from!(TimePoint, i64);
-
 
 impl Sub for TimePoint {
     type Output = TimeDelta;
@@ -203,10 +235,10 @@ impl SubAssign<TimeDelta> for TimePoint {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TimeSpan {
     /// The first time point of the time span (inclusive)
-    start: TimePoint,
+    pub start: TimePoint,
 
     /// The last time point of the time span (excluded)
-    end: TimePoint,
+    pub end: TimePoint,
 }
 
 impl TimeSpan {
@@ -214,7 +246,7 @@ impl TimeSpan {
     ///
     /// # Examples
     /// ```rust
-    /// use aligner::{TimeSpan, TimePoint};
+    /// use alass_core::{TimeSpan, TimePoint};
     ///
     /// let t0 = TimePoint::from(0);
     /// let t10 = TimePoint::from(10);
@@ -228,7 +260,7 @@ impl TimeSpan {
     /// This function asserts that `start` is less or equal `end`.
     ///
     /// ```rust,should_panic
-    /// use aligner::{TimeSpan, TimePoint};
+    /// use alass_core::{TimeSpan, TimePoint};
     ///
     /// let t0 = TimePoint::from(0);
     /// let t10 = TimePoint::from(10);
@@ -236,14 +268,11 @@ impl TimeSpan {
     /// // this will case a panic
     /// let ts = TimeSpan::new(t10, t0);
     /// ```
+    #[inline]
     pub fn new(start: TimePoint, end: TimePoint) -> TimeSpan {
         assert!(start <= end);
-        TimeSpan {
-            start: start,
-            end: end,
-        }
+        TimeSpan { start: start, end: end }
     }
-
 
     /// Create a new TimeSpan with `start` and `end`. This function will not
     /// panic on `end < start`, but
@@ -251,7 +280,7 @@ impl TimeSpan {
     ///
     /// # Examples
     /// ```rust
-    /// use aligner::{TimeSpan, TimePoint};
+    /// use alass_core::{TimeSpan, TimePoint};
     ///
     /// let t0 = TimePoint::from(0);
     /// let t10 = TimePoint::from(10);
@@ -266,8 +295,6 @@ impl TimeSpan {
             TimeSpan::new(start, end)
         }
     }
-
-
 
     /// Mutates a `TimeSpan`s end.
     ///
@@ -300,11 +327,16 @@ impl TimeSpan {
         self.end
     }
 
+    /// Returns one (of the possibly two) points in the center of the `TimeSpan`.
+    pub fn half(self) -> TimePoint {
+        TimePoint::from((self.start.as_i64() + self.end.as_i64()) / 2)
+    }
+
     /// Returns true if `self` contains `TimeSpan` `other`.
     ///
     /// # Examples
     /// ```
-    /// use aligner::{TimeSpan, TimePoint};
+    /// use alass_core::{TimeSpan, TimePoint};
     /// ```
     pub fn contains(self, other: TimeSpan) -> bool {
         other.start >= self.start && other.end <= self.end
@@ -313,7 +345,7 @@ impl TimeSpan {
     /// Returns the smallest difference between two `TimeSpan`s.
     ///
     /// ```
-    /// use aligner::{TimeSpan, TimePoint, TimeDelta};
+    /// use alass_core::{TimeSpan, TimePoint, TimeDelta};
     ///
     /// let p = TimePoint::from(0);
     /// let d = TimeDelta::one();
