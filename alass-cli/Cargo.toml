@@ -1,6 +1,6 @@
 [package]
 name = "alass-cli"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["kaegi <kaegi.dev@gmail.com>"]
 description = "Automatic Language-Agnostic Subtitle Synchronization (Command Line Tool)"
 repository = "https://github.com/kaegi/alass"
