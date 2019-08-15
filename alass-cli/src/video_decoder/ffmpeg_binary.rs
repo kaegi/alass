@@ -38,14 +38,21 @@ struct Stream {
     pub index: usize,
     pub codec_long_name: String,
     pub channels: Option<usize>,
-    pub duration: String,
+    /// `.mkv` does not store the duration in the streams; we have to use `format -> duration` instead
+    pub duration: Option<String>,
     pub codec_type: CodecType,
+}
+
+#[derive(Debug, Deserialize)]
+struct Format {
+    pub duration: Option<String>,
 }
 
 /// Metadata associated with a video.
 #[derive(Debug, Deserialize)]
 struct Metadata {
     streams: Vec<Stream>,
+    format: Option<Format>,
 }
 
 define_error!(DecoderError, DecoderErrorKind);
@@ -88,6 +95,7 @@ pub(crate) enum DecoderErrorKind {
         s: String,
     },
     AudioSegmentProcessingFailed,
+    NoDurationInformation,
 }
 
 fn format_cmd(cmd_path: &PathBuf, args: &[OsString]) -> String {
@@ -146,6 +154,7 @@ impl fmt::Display for DecoderErrorKind {
                 write!(f, "failed to parse duration string '{}' from metadata", s)
             }
             DecoderErrorKind::AudioSegmentProcessingFailed => write!(f, "processing audio segment failed"),
+            DecoderErrorKind::NoDurationInformation => write!(f, "no audio duration information found"),
         }
     }
 }
@@ -175,7 +184,8 @@ impl VideoDecoderFFmpegBinary {
         let args = vec![
             OsString::from("-v"),
             OsString::from("error"),
-            OsString::from("-show_streams"),
+            OsString::from("-show_entries"),
+            OsString::from("format=duration:stream=index,codec_long_name,channels,duration,codec_type"),
             OsString::from("-of"),
             OsString::from("json"),
             OsString::from(file_path.as_ref()),
@@ -185,12 +195,16 @@ impl VideoDecoderFFmpegBinary {
             .unwrap_or(OsString::from("ffprobe"))
             .into();
 
-        let best_stream_opt: Option<Stream> = Self::get_metadata(file_path_buf.clone(), ffprobe_path.clone(), &args)
-            .with_context(|_| DecoderErrorKind::ExtractingMetadataFailed {
-                file_path: file_path_buf.clone(),
-                cmd_path: ffprobe_path.clone(),
-                args: args,
-            })?
+        let metadata: Metadata =
+            Self::get_metadata(file_path_buf.clone(), ffprobe_path.clone(), &args).with_context(|_| {
+                DecoderErrorKind::ExtractingMetadataFailed {
+                    file_path: file_path_buf.clone(),
+                    cmd_path: ffprobe_path.clone(),
+                    args: args,
+                }
+            })?;
+
+        let best_stream_opt: Option<Stream> = metadata
             .streams
             .into_iter()
             .filter(|s| s.codec_type == CodecType::Audio && s.channels.is_some())
@@ -238,13 +252,18 @@ impl VideoDecoderFFmpegBinary {
             OsString::from("-"),
         ];
 
-        let duration =
-            best_stream
-                .duration
-                .parse::<f64>()
-                .with_context(|_| DecoderErrorKind::FailedToParseDuration {
-                    s: best_stream.duration,
-                })?;
+        let format_opt: Option<Format> = metadata.format;
+
+        // `.mkv` containers do not store duration info in streams, only the format information does contain it
+        let duration_str = best_stream
+            .duration
+            .or_else(|| format_opt.and_then(|format| format.duration))
+            .ok_or_else(|| DecoderError::from(DecoderErrorKind::NoDurationInformation))?;
+
+        let duration = duration_str
+            .parse::<f64>()
+            .with_context(|_| DecoderErrorKind::FailedToParseDuration { s: duration_str })?;
+
         let num_samples: i64 = (duration * 8000.0) as i64 / PROGRESS_PRESCALER;
 
         progress_handler.init(num_samples);

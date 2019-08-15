@@ -13,7 +13,7 @@ package_windows64:
 	rm target/alass-windows64/ffmpeg/bin/ffplay.exe
 	cargo build --release --target x86_64-pc-windows-gnu
 	cp target/x86_64-pc-windows-gnu/release/alass-cli.exe target/alass-windows64/bin
-	echo -ne '@echo off\r\nset ALASS_FFMPEG_PATH=.\\ffmpeg\\bin\\ffmpeg.exe\r\nset ALASS_FFPROBE_PATH=.\\ffmpeg\\bin\\ffprobe.exe\r\n.\\bin\\alass-cli.exe %*\r\n' > target/alass-windows64/alass.bat
+	echo -ne '@echo off\r\nset ALASS_FFMPEG_PATH=%~dp0ffmpeg\\bin\\ffmpeg.exe\r\nset ALASS_FFPROBE_PATH=%~dp0ffmpeg\\bin\\ffprobe.exe\r\n"%~dp0bin\\alass-cli.exe" %*\r\n' > target/alass-windows64/alass.bat
 	( cd target; zip -J -r alass-windows64.zip alass-windows64 )
 
 
