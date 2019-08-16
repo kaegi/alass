@@ -127,7 +127,7 @@ mod tests {
     use super::*;
     use crate::{prepare_time_spans, TimePoint};
     use rand;
-    use rand::Rng;
+    use rand::RngCore;
 
     /// Some special time span sequences.
     fn predefined_time_spans() -> Vec<Vec<TimeSpan>> {
