@@ -33,7 +33,7 @@ macro_rules! define_error {
                 self.inner.name()
             }
 
-            fn cause(&self) -> Option<&Fail> {
+            fn cause(&self) -> Option<&dyn Fail> {
                 self.inner.cause()
             }
 

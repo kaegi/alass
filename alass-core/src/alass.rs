@@ -301,7 +301,7 @@ impl Aligner {
 
     pub fn align_with_splits(
         &self,
-        mut progress_handler_opt: Option<Box<ProgressHandler>>,
+        mut progress_handler_opt: Option<Box<dyn ProgressHandler>>,
         nopsplit_bonus_normalized: f64,
         speed_optimization_opt: Option<f64>,
     ) -> Vec<TimeDelta> {

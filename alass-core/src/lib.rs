@@ -56,7 +56,7 @@ use std::vec::from_elem;
 pub fn align_nosplit(
     list: Vec<TimeSpan>,
     reference: Vec<TimeSpan>,
-    mut progress_handler_opt: Option<Box<ProgressHandler>>,
+    mut progress_handler_opt: Option<Box<dyn ProgressHandler>>,
     statistics_opt: Option<Statistics>,
 ) -> TimeDelta {
     if let Some(p) = progress_handler_opt.as_mut() {
@@ -103,7 +103,7 @@ pub fn align(
     reference: Vec<TimeSpan>,
     split_penalty_normalized: f64,
     speed_optimization: Option<f64>,
-    progress_handler_opt: Option<Box<ProgressHandler>>,
+    progress_handler_opt: Option<Box<dyn ProgressHandler>>,
     statistics_opt: Option<Statistics>,
 ) -> Vec<TimeDelta> {
     let (list_nonoverlapping, list_indices) = prepare_time_spans(list.clone());
