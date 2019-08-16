@@ -1,6 +1,6 @@
 [package]
 name = "alass-core"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["kaegi <kaegi.dev@gmail.com>"]
 description = "Automatically corrects subtitle timings given a second correct subtitle (binary)"
 repository = "https://github.com/kaegi/alass/alass-core"
@@ -24,7 +24,7 @@ statistics = []
 nosplit-heap-sort = []
 
 [dependencies]
-arrayvec = "0.4.0"
+arrayvec = "0.4.11"
 
 [dev-dependencies]
 rand = "0.7"
