@@ -783,8 +783,6 @@ fn run() -> Result<(), failure::Error> {
 // //////////////////////////////////////////////////////////////////////////////////////////////////
 
 fn main() {
-    env_logger::init();
-
     match run() {
         Ok(_) => std::process::exit(0),
         Err(error) => {

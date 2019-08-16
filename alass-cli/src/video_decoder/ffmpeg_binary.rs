@@ -1,5 +1,4 @@
 use failure::{Backtrace, Context, Fail, ResultExt};
-use log::debug;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Read;
@@ -428,7 +427,6 @@ impl VideoDecoderFFmpegBinary {
 
         let stdout =
             from_utf8(&ffprobe_process.stdout).with_context(|_| DecoderErrorKind::FailedToDecodeVideoStreamInfo)?;
-        debug!("Video metadata: {}", stdout);
 
         let metadata: Metadata = serde_json::from_str(stdout)
             .with_context(|_| DecoderErrorKind::DeserializingMetadataFailed { path: file_path })?;
