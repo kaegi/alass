@@ -2,7 +2,7 @@
 name = "alass-core"
 version = "1.0.1"
 authors = ["kaegi <kaegi.dev@gmail.com>"]
-description = "Automatically corrects subtitle timings given a second correct subtitle (binary)"
+description = "Automatically corrects subtitle timings given a second correct subtitle (Library)"
 repository = "https://github.com/kaegi/alass/alass-core"
 documentation = "https://docs.rs/alass-core"
 readme = "README.md"
