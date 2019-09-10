@@ -1,6 +1,6 @@
 [package]
 name = "alass-cli"
-version = "1.0.2"
+version = "1.1.0"
 authors = ["kaegi <kaegi.dev@gmail.com>"]
 description = "Automatic Language-Agnostic Subtitle Synchronization (Command Line Tool)"
 repository = "https://github.com/kaegi/alass"
@@ -23,9 +23,9 @@ ffmpeg-binary = ["byteorder"]
 
 
 [dependencies]
-alass-core = { version = "1.0.1", path = "../alass-core" }
-webrtc-vad = { version = "0.1.0", path = "../../webrtc-vad" }
-subparse = { version = "0.6.1", path = "../../subparse" }
+alass-core = { version = "1.1.0", path = "../alass-core" }
+webrtc-vad = "0.1.0"
+subparse = "0.6.1"
 
 clap = "2.33.0"
 pbr = "1.0.0-alpha.2"
