@@ -24,180 +24,25 @@ extern crate encoding_rs;
 extern crate pbr;
 extern crate subparse;
 
-const PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
-const PKG_NAME: Option<&'static str> = option_env!("CARGO_PKG_NAME");
-const PKG_DESCRIPTION: Option<&'static str> = option_env!("CARGO_PKG_DESCRIPTION");
-
 // Alg* stands for algorithm (the internal alass algorithm types)
 
 use crate::subparse::SubtitleFileInterface;
 
-use alass_core::{align, Statistics, TimeDelta as AlgTimeDelta, TimePoint as AlgTimePoint, TimeSpan as AlgTimeSpan};
+use alass_core::{align, Statistics, TimeDelta as AlgTimeDelta};
 use clap::{App, Arg};
 use encoding_rs::Encoding;
 use encoding_rs::UTF_8;
 use failure::ResultExt;
-use pbr::ProgressBar;
-use std::cmp::{max, min};
 use std::ffi::OsStr;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::result::Result;
 use std::str::FromStr;
 
-mod video_decoder;
-
-mod errors;
-use errors::*;
-
-// subparse
 use subparse::timetypes::*;
-use subparse::{get_subtitle_format_err, parse_bytes, SubtitleEntry, SubtitleFile, SubtitleFormat};
+use subparse::{SubtitleEntry, SubtitleFormat};
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-enum VideoFileFormat {
-    /// we don't need to differentiate between video file formats in current code
-    NotImplemented,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-enum InputFileFormat {
-    Subtitle(subparse::SubtitleFormat),
-    Video(VideoFileFormat),
-}
-
-impl InputFileFormat {
-    fn subtitle_format(&self) -> Option<subparse::SubtitleFormat> {
-        match self {
-            InputFileFormat::Subtitle(f) => Some(*f),
-            _ => None,
-        }
-    }
-}
-
-struct ProgressInfo {
-    prescaler: i64,
-    counter: i64,
-    progress_bar: Option<ProgressBar<std::io::Stdout>>,
-}
-
-impl ProgressInfo {
-    fn new(prescaler: i64) -> ProgressInfo {
-        ProgressInfo {
-            prescaler,
-            counter: 0,
-            progress_bar: None,
-        }
-    }
-}
-
-impl alass_core::ProgressHandler for ProgressInfo {
-    fn init(&mut self, steps: i64) {
-        self.progress_bar = Some(ProgressBar::new(steps as u64));
-    }
-    fn inc(&mut self) {
-        self.counter = self.counter + 1;
-        if self.counter == self.prescaler {
-            self.progress_bar.as_mut().unwrap().inc();
-            self.counter = 0;
-        }
-    }
-    fn finish(&mut self) {
-        self.progress_bar.as_mut().unwrap().finish_println("\n");
-    }
-}
-
-impl video_decoder::ProgressHandler for ProgressInfo {
-    fn init(&mut self, steps: i64) {
-        self.progress_bar = Some(ProgressBar::new((steps / self.prescaler) as u64));
-    }
-    fn inc(&mut self) {
-        self.counter = self.counter + 1;
-        if self.counter == self.prescaler {
-            self.progress_bar.as_mut().unwrap().inc();
-            self.counter = 0;
-        }
-    }
-    fn finish(&mut self) {
-        self.progress_bar.as_mut().unwrap().finish_println("\n");
-    }
-}
-
-fn read_file_to_bytes(path: &Path) -> std::result::Result<Vec<u8>, FileOperationError> {
-    let mut file = File::open(path).with_context(|_| FileOperationErrorKind::FileOpen {
-        path: path.to_path_buf(),
-    })?;
-    let mut v = Vec::new();
-    file.read_to_end(&mut v)
-        .with_context(|_| FileOperationErrorKind::FileRead {
-            path: path.to_path_buf(),
-        })?;
-    Ok(v)
-}
-
-fn write_data_to_file(path: &Path, d: Vec<u8>) -> std::result::Result<(), FileOperationError> {
-    let mut file = File::create(path).with_context(|_| FileOperationErrorKind::FileOpen {
-        path: path.to_path_buf(),
-    })?;
-    file.write_all(&d).with_context(|_| FileOperationErrorKind::FileWrite {
-        path: path.to_path_buf(),
-    })?;
-    Ok(())
-}
-
-fn timing_to_alg_timepoint(t: TimePoint, interval: i64) -> AlgTimePoint {
-    assert!(interval > 0);
-    AlgTimePoint::from(t.msecs() / interval)
-}
-
-fn alg_delta_to_delta(t: AlgTimeDelta, interval: i64) -> TimeDelta {
-    assert!(interval > 0);
-    let time_int: i64 = t.into();
-    TimeDelta::from_msecs(time_int * interval)
-}
-
-fn timings_to_alg_timespans(v: &[TimeSpan], interval: i64) -> Vec<AlgTimeSpan> {
-    v.iter()
-        .cloned()
-        .map(|timespan| {
-            AlgTimeSpan::new_safe(
-                timing_to_alg_timepoint(timespan.start, interval),
-                timing_to_alg_timepoint(timespan.end, interval),
-            )
-        })
-        .collect()
-}
-fn alg_deltas_to_timing_deltas(v: &[AlgTimeDelta], interval: i64) -> Vec<TimeDelta> {
-    v.iter().cloned().map(|x| alg_delta_to_delta(x, interval)).collect()
-}
-
-/// Groups consecutive timespans with the same delta together.
-fn get_subtitle_delta_groups(mut v: Vec<(AlgTimeDelta, TimeSpan)>) -> Vec<(AlgTimeDelta, Vec<TimeSpan>)> {
-    v.sort_by_key(|t| min((t.1).start, (t.1).end));
-
-    let mut result: Vec<(AlgTimeDelta, Vec<TimeSpan>)> = Vec::new();
-
-    for (delta, original_timespan) in v {
-        let mut new_block = false;
-
-        if let Some(last_tuple_ref) = result.last_mut() {
-            if delta == last_tuple_ref.0 {
-                last_tuple_ref.1.push(original_timespan);
-            } else {
-                new_block = true;
-            }
-        } else {
-            new_block = true;
-        }
-
-        if new_block {
-            result.push((delta, vec![original_timespan]));
-        }
-    }
-
-    result
-}
+use alass_cli::errors::*;
+use alass_cli::*;
 
 /// Does reading, parsing and nice error handling for a f64 clap parameter.
 fn unpack_clap_number_f64(
@@ -233,7 +78,7 @@ fn unpack_clap_number_i64(
         .map_err(|e| InputArgumentsError::from(e))
 }
 
-fn get_encoding(opt: Option<&str>) -> &'static Encoding {
+pub fn get_encoding(opt: Option<&str>) -> &'static Encoding {
     match opt {
         None => UTF_8,
         Some(label) => {
@@ -244,173 +89,6 @@ fn get_encoding(opt: Option<&str>) -> &'static Encoding {
                 Some(encoding) => encoding,
             }
         }
-    }
-}
-
-struct InputFileHandler {
-    subtitle_file: Option<SubtitleFile>,
-    file_format: InputFileFormat,
-    subparse_timespans: Vec<subparse::timetypes::TimeSpan>,
-    aligner_timespans: Vec<alass_core::TimeSpan>,
-}
-
-impl InputFileHandler {
-    pub fn open(
-        file_path: &Path,
-        interval: i64,
-        sub_encoding: &'static Encoding,
-        sub_fps: f64,
-    ) -> Result<InputFileHandler, InputFileError> {
-        let known_subitle_endings: [&str; 6] = ["srt", "vob", "idx", "ass", "ssa", "sub"];
-
-        let extension: Option<&OsStr> = file_path.extension();
-
-        for subtitle_ending in known_subitle_endings.into_iter() {
-            if extension == Some(OsStr::new(subtitle_ending)) {
-                return Ok(Self::open_sub_file(file_path, interval, sub_encoding, sub_fps)
-                    .with_context(|_| InputFileErrorKind::SubtitleFile(file_path.to_path_buf()))?);
-            }
-        }
-
-        return Ok(Self::open_video_file(file_path, interval)
-            .with_context(|_| InputFileErrorKind::VideoFile(file_path.to_path_buf()))?);
-    }
-
-    pub fn open_video_file(file_path: &Path, interval: i64) -> Result<InputFileHandler, InputVideoError> {
-        //video_decoder::VideoDecoder::decode(file_path, );
-        use webrtc_vad::*;
-
-        struct WebRtcFvad {
-            fvad: Vad,
-            vad_buffer: Vec<bool>,
-        }
-
-        impl video_decoder::AudioReceiver for WebRtcFvad {
-            type Output = Vec<bool>;
-            type Error = InputVideoError;
-
-            fn push_samples(&mut self, samples: &[i16]) -> Result<(), InputVideoError> {
-                // the chunked audio receiver should only provide 10ms of 8000kHz -> 80 samples
-                assert!(samples.len() == 80);
-
-                let is_voice = self
-                    .fvad
-                    .is_voice_segment(samples)
-                    .map_err(|_| InputVideoErrorKind::VadAnalysisFailed)?;
-
-                self.vad_buffer.push(is_voice);
-
-                Ok(())
-            }
-
-            fn finish(self) -> Result<Vec<bool>, InputVideoError> {
-                Ok(self.vad_buffer)
-            }
-        }
-
-        let vad_processor = WebRtcFvad {
-            fvad: Vad::new(8000).map_err(|_| InputVideoErrorKind::VadCreationFailed)?,
-            vad_buffer: Vec::new(),
-        };
-
-        let chunk_processor = video_decoder::ChunkedAudioReceiver::new(80, vad_processor);
-
-        println!("extracting audio from reference file '{}'...", file_path.display());
-        let vad_buffer = video_decoder::VideoDecoder::decode(file_path, chunk_processor, ProgressInfo::new(500))
-            .with_context(|_| InputVideoErrorKind::FailedToDecode {
-                path: PathBuf::from(file_path),
-            })?;
-
-        let mut voice_segments: Vec<(i64, i64)> = Vec::new();
-        let mut voice_segment_start: i64 = 0;
-        let mut last_was_voice_segment = false;
-
-        for (i, is_voice_segment) in vad_buffer.into_iter().chain(std::iter::once(false)).enumerate() {
-            match (last_was_voice_segment, is_voice_segment) {
-                (false, false) | (true, true) => {}
-                (false, true) => {
-                    voice_segment_start = i as i64;
-                }
-                (true, false) => {
-                    voice_segments.push((voice_segment_start, i as i64 - 1));
-                }
-            }
-
-            last_was_voice_segment = is_voice_segment;
-        }
-
-        let min_span_length_ms = 200;
-
-        let subparse_timespans: Vec<subparse::timetypes::TimeSpan> = voice_segments
-            .into_iter()
-            .filter(|&(start, end)| start + min_span_length_ms / 10 < end)
-            .map(|(start, end)| {
-                subparse::timetypes::TimeSpan::new(
-                    subparse::timetypes::TimePoint::from_msecs(start * 10),
-                    subparse::timetypes::TimePoint::from_msecs(end * 10),
-                )
-            })
-            .collect();
-
-        let aligner_timespans: Vec<alass_core::TimeSpan> = timings_to_alg_timespans(&subparse_timespans, interval);
-
-        Ok(InputFileHandler {
-            file_format: InputFileFormat::Video(VideoFileFormat::NotImplemented),
-            subparse_timespans,
-            aligner_timespans,
-            subtitle_file: None,
-        })
-    }
-
-    pub fn open_sub_file(
-        file_path: &Path,
-        interval: i64,
-        sub_encoding: &'static Encoding,
-        sub_fps: f64,
-    ) -> Result<InputFileHandler, InputSubtitleError> {
-        let sub_data = read_file_to_bytes(file_path.as_ref())
-            .with_context(|_| InputSubtitleErrorKind::ReadingSubtitleFileFailed(file_path.to_path_buf()))?;
-
-        let file_format = get_subtitle_format_err(file_path.extension(), &sub_data)
-            .with_context(|_| InputSubtitleErrorKind::UnknownSubtitleFormat(file_path.to_path_buf()))?;
-
-        let parsed_subtitle_data: SubtitleFile = parse_bytes(file_format, &sub_data, sub_encoding, sub_fps)
-            .with_context(|_| InputSubtitleErrorKind::ParsingSubtitleFailed(file_path.to_path_buf()))?;
-
-        let subparse_timespans: Vec<subparse::timetypes::TimeSpan> = parsed_subtitle_data
-            .get_subtitle_entries()
-            .with_context(|_| InputSubtitleErrorKind::RetreivingSubtitleLinesFailed(file_path.to_path_buf()))?
-            .into_iter()
-            .map(|subentry| subentry.timespan)
-            .map(|timespan: subparse::timetypes::TimeSpan| {
-                TimeSpan::new(min(timespan.start, timespan.end), max(timespan.start, timespan.end))
-            })
-            .collect();
-
-        let aligner_timespans: Vec<alass_core::TimeSpan> = timings_to_alg_timespans(&subparse_timespans, interval);
-
-        Ok(InputFileHandler {
-            file_format: InputFileFormat::Subtitle(file_format),
-            subparse_timespans,
-            aligner_timespans,
-            subtitle_file: Some(parsed_subtitle_data),
-        })
-    }
-
-    pub fn into_subtitle_file(self) -> Option<SubtitleFile> {
-        self.subtitle_file
-    }
-
-    pub fn subparse_timespans(&self) -> &[subparse::timetypes::TimeSpan] {
-        self.subparse_timespans.as_slice()
-    }
-
-    pub fn aligner_timespans(&self) -> &[alass_core::TimeSpan] {
-        self.aligner_timespans.as_slice()
-    }
-
-    pub fn file_format(&self) -> InputFileFormat {
-        self.file_format
     }
 }
 
@@ -455,8 +133,8 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
         .arg(Arg::with_name("split-penalty")
             .short("p")
             .long("split-penalty")
-            .value_name("floating point number from 0 to 100")
-            .help("Determines how eager the algorithm is to avoid splitting of the subtitles. 100 means that all lines will be shifted by the same offset, while 0 will produce MANY segments with different offsets. Values from 0.1 to 20 are the most useful.")
+            .value_name("floating point number from 0 to 1000")
+            .help("Determines how eager the algorithm is to avoid splitting of the subtitles. 1000 means that all lines will be shifted by the same offset, while 0.01 will produce MANY segments with different offsets. Values from 1 to 20 are the most useful.")
             .default_value("4"))
         .arg(Arg::with_name("interval")
             .short("i")
@@ -536,12 +214,12 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
     }
 
     let split_penalty: f64 = unpack_clap_number_f64(&matches, "split-penalty")?;
-    if split_penalty < 0.0 || split_penalty > 100.0 {
+    if split_penalty < 0.0 || split_penalty > 1000.0 {
         return Err(InputArgumentsErrorKind::ValueNotInRange {
             argument_name: "interval".to_string(),
             value: split_penalty,
             min: 0.0,
-            max: 100.0,
+            max: 1000.0,
         }
         .into());
     }
@@ -584,12 +262,20 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
 fn run() -> Result<(), failure::Error> {
     let args = parse_args()?;
 
-    let ref_file = InputFileHandler::open(
+    let mut ref_file = InputFileHandler::open(
         &args.reference_file_path,
-        args.interval,
         args.encoding_ref,
         args.sub_fps_ref,
+        ProgressInfo::new(
+            500,
+            Some(format!(
+                "extracting audio from reference file '{}'...",
+                args.reference_file_path.display()
+            )),
+        ),
     )?;
+
+    ref_file.filter_video_with_min_span_length_ms(200);
 
     if args.incorrect_file_path.eq(OsStr::new("_")) {
         // DEBUG MODE FOR REFERENCE FILE WAS ACTIVATED
@@ -600,7 +286,7 @@ fn run() -> Result<(), failure::Error> {
         println!();
 
         let lines: Vec<(subparse::timetypes::TimeSpan, String)> = ref_file
-            .subparse_timespans()
+            .timespans()
             .iter()
             .cloned()
             .enumerate()
@@ -618,19 +304,10 @@ fn run() -> Result<(), failure::Error> {
         return Ok(());
     }
 
-    let inc_file = InputFileHandler::open_sub_file(
-        args.incorrect_file_path.as_path(),
-        args.interval,
-        args.encoding_inc,
-        args.sub_fps_inc,
-    )?;
+    let inc_file =
+        SubtitleFileHandler::open_sub_file(args.incorrect_file_path.as_path(), args.encoding_inc, args.sub_fps_inc)?;
 
-    let output_file_format;
-
-    match inc_file.file_format() {
-        InputFileFormat::Subtitle(f) => output_file_format = f,
-        InputFileFormat::Video(_) => unreachable!(),
-    }
+    let output_file_format = inc_file.file_format();
 
     // this program internally stores the files in a non-destructable way (so
     // formatting is preserved) but has no abilty to convert between formats
@@ -638,7 +315,7 @@ fn run() -> Result<(), failure::Error> {
         return Err(TopLevelErrorKind::FileFormatMismatch {
             input_file_path: args.incorrect_file_path,
             output_file_path: args.output_file_path,
-            input_file_format: inc_file.file_format().subtitle_format().unwrap(),
+            input_file_format: inc_file.file_format(),
         }
         .into_error()
         .into());
@@ -651,27 +328,35 @@ fn run() -> Result<(), failure::Error> {
         statistics_module_opt = None;
     }
 
-    println!(
+    let inc_aligner_timespans: Vec<alass_core::TimeSpan> =
+        timings_to_alg_timespans(inc_file.timespans(), args.interval);
+    let ref_aligner_timespans: Vec<alass_core::TimeSpan> =
+        timings_to_alg_timespans(ref_file.timespans(), args.interval);
+
+    let align_start_msg = format!(
         "synchronizing '{}' to reference file '{}'...",
         args.incorrect_file_path.display(),
         args.reference_file_path.display()
     );
     let alg_deltas;
     if args.no_split_mode {
+        let num_inc_timespancs = inc_aligner_timespans.len();
+
         let alg_delta = alass_core::align_nosplit(
-            inc_file.aligner_timespans().to_vec(),
-            ref_file.aligner_timespans().to_vec(),
-            Some(Box::new(ProgressInfo::new(1))),
+            inc_aligner_timespans,
+            ref_aligner_timespans,
+            Some(Box::new(ProgressInfo::new(1, Some(align_start_msg)))),
             statistics_module_opt,
         );
-        alg_deltas = std::vec::from_elem(alg_delta, inc_file.aligner_timespans().len());
+
+        alg_deltas = std::vec::from_elem(alg_delta, num_inc_timespancs);
     } else {
         alg_deltas = align(
-            inc_file.aligner_timespans().to_vec(),
-            ref_file.aligner_timespans().to_vec(),
-            args.split_penalty / 100.0,
+            inc_aligner_timespans,
+            ref_aligner_timespans,
+            args.split_penalty,
             args.speed_optimization,
-            Some(Box::new(ProgressInfo::new(1))),
+            Some(Box::new(ProgressInfo::new(1, Some(align_start_msg)))),
             statistics_module_opt,
         );
     }
@@ -682,7 +367,7 @@ fn run() -> Result<(), failure::Error> {
         alg_deltas
             .iter()
             .cloned()
-            .zip(inc_file.subparse_timespans().iter().cloned())
+            .zip(inc_file.timespans().iter().cloned())
             .collect(),
     );
 
@@ -711,17 +396,17 @@ fn run() -> Result<(), failure::Error> {
 
     println!();
 
-    if ref_file.subparse_timespans().is_empty() {
+    if ref_file.timespans().is_empty() {
         println!("warn: reference file has no subtitle lines");
         println!();
     }
-    if inc_file.subparse_timespans().is_empty() {
+    if inc_file.timespans().is_empty() {
         println!("warn: file with incorrect subtitles has no lines");
         println!();
     }
 
     let mut corrected_timespans: Vec<subparse::timetypes::TimeSpan> = inc_file
-        .subparse_timespans()
+        .timespans()
         .iter()
         .zip(deltas.iter())
         .map(|(&timespan, &delta)| timespan + delta)
@@ -762,10 +447,7 @@ fn run() -> Result<(), failure::Error> {
         .collect();
 
     // write corrected files
-    let mut correct_file = inc_file
-        .into_subtitle_file()
-        .expect("incorrect input file can only be a subtitle")
-        .clone();
+    let mut correct_file = inc_file.into_subtitle_file();
     correct_file
         .update_subtitle_entries(&shifted_timespans)
         .with_context(|_| TopLevelErrorKind::FailedToUpdateSubtitle)?;
@@ -786,30 +468,7 @@ fn main() {
     match run() {
         Ok(_) => std::process::exit(0),
         Err(error) => {
-            let show_bt_opt = std::env::vars()
-                .find(|(key, _)| key == "RUST_BACKTRACE")
-                .map(|(_, value)| value);
-            let show_bt = show_bt_opt != None && show_bt_opt != Some("0".to_string());
-
-            println!("error: {}", error);
-            if show_bt {
-                println!("stack trace: {}", error.backtrace());
-            }
-
-            for cause in error.as_fail().iter_causes() {
-                println!("caused by: {}", cause);
-                if show_bt {
-                    if let Some(backtrace) = cause.backtrace() {
-                        println!("stack trace: {}", backtrace);
-                    }
-                }
-            }
-
-            if !show_bt {
-                println!("");
-                println!("not: run with environment variable 'RUST_BACKTRACE=1' for detailed stack traces");
-            }
-
+            print_error_chain(error);
             std::process::exit(1)
         }
     }

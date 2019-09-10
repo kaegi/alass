@@ -6,3 +6,5 @@ target
 *.svg
 data
 *.rs.bk
+videos.list
+generated-data

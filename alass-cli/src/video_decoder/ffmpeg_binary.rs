@@ -57,7 +57,7 @@ struct Metadata {
 define_error!(DecoderError, DecoderErrorKind);
 
 #[derive(Debug, Fail)]
-pub(crate) enum DecoderErrorKind {
+pub enum DecoderErrorKind {
     FailedToDecodeVideoStreamInfo,
     ExtractingMetadataFailed {
         cmd_path: PathBuf,
@@ -173,7 +173,7 @@ static PROGRESS_PRESCALER: i64 = 200;
 
 impl VideoDecoderFFmpegBinary {
     /// Samples are pushed in 8kHz mono/single-channel format.
-    pub(crate) fn decode<T>(
+    pub fn decode<T>(
         file_path: impl AsRef<Path>,
         receiver: impl super::AudioReceiver<Output = T>,
         mut progress_handler: impl super::ProgressHandler,

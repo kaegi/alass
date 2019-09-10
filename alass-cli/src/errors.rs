@@ -24,7 +24,7 @@ use subparse::SubtitleFormat;
 macro_rules! define_error {
     ($error:ident, $errorKind:ident) => {
         #[derive(Debug)]
-        pub(crate) struct $error {
+        pub struct $error {
             inner: Context<$errorKind>,
         }
 
@@ -83,7 +83,7 @@ macro_rules! define_error {
 define_error!(InputFileError, InputFileErrorKind);
 
 #[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub(crate) enum InputFileErrorKind {
+pub enum InputFileErrorKind {
     VideoFile(PathBuf),
     SubtitleFile(PathBuf),
 }
@@ -100,7 +100,7 @@ impl fmt::Display for InputFileErrorKind {
 define_error!(FileOperationError, FileOperationErrorKind);
 
 #[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub(crate) enum FileOperationErrorKind {
+pub enum FileOperationErrorKind {
     FileOpen { path: PathBuf },
     FileRead { path: PathBuf },
     FileWrite { path: PathBuf },
@@ -119,7 +119,7 @@ impl fmt::Display for FileOperationErrorKind {
 define_error!(InputVideoError, InputVideoErrorKind);
 
 #[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub(crate) enum InputVideoErrorKind {
+pub enum InputVideoErrorKind {
     FailedToDecode { path: PathBuf },
     VadCreationFailed,
     VadAnalysisFailed,
@@ -140,7 +140,7 @@ impl fmt::Display for InputVideoErrorKind {
 define_error!(InputSubtitleError, InputSubtitleErrorKind);
 
 #[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub(crate) enum InputSubtitleErrorKind {
+pub enum InputSubtitleErrorKind {
     ReadingSubtitleFileFailed(PathBuf),
     UnknownSubtitleFormat(PathBuf),
     ParsingSubtitleFailed(PathBuf),
@@ -169,7 +169,7 @@ impl fmt::Display for InputSubtitleErrorKind {
 define_error!(InputArgumentsError, InputArgumentsErrorKind);
 
 #[derive(Clone, PartialEq, Debug, Fail)]
-pub(crate) enum InputArgumentsErrorKind {
+pub enum InputArgumentsErrorKind {
     #[fail(
         display = "expected value '{}' to be in range '{}'-'{}', found value '{}'",
         argument_name, min, max, value
@@ -192,7 +192,7 @@ pub(crate) enum InputArgumentsErrorKind {
 
 define_error!(TopLevelError, TopLevelErrorKind);
 
-pub(crate) enum TopLevelErrorKind {
+pub enum TopLevelErrorKind {
     FileFormatMismatch {
         input_file_path: PathBuf,
         output_file_path: PathBuf,

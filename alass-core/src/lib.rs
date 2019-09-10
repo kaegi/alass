@@ -86,10 +86,10 @@ pub fn align_nosplit(
 /// Returns the delta for every time span in list.
 ///
 /// The `split_penalty_normalized` is a value between
-/// 0 and 1. Providing 0 will make the algorithm indifferent of splitting lines (resulting in MANY
-/// different deltas), so this is not recommended. Providing 1 will assure that no split will occur,
+/// 0 and 1000. Providing 0 will make the algorithm indifferent of splitting lines (resulting in MANY
+/// different deltas), so this is not recommended. Providing 1000 will assure that no split will occur,
 /// so only one/the best offset is applied to ALL lines. The most common useful values are in the
-/// 0.2 to 0.01 range.
+/// 1 to 20 range.
 ///
 /// Especially for larger subtitles (e.g. 1 hour in millisecond resolution and 1000 subtitle lines) this
 /// process might take some seconds. To provide user feedback one can pass a `ProgressHandler` to
@@ -97,11 +97,11 @@ pub fn align_nosplit(
 ///
 /// If you want to increase the speed of the alignment process, you can use the `speed_optimization`
 /// parameter. This value can be between `0` and `+inf`, altough after `10` the accuracy
-/// will have greatly degraded. It is recommended to supply a value around `5`.
+/// will have greatly degraded. It is recommended to supply a value around `3`.
 pub fn align(
     list: Vec<TimeSpan>,
     reference: Vec<TimeSpan>,
-    split_penalty_normalized: f64,
+    split_penalty: f64,
     speed_optimization: Option<f64>,
     progress_handler_opt: Option<Box<dyn ProgressHandler>>,
     statistics_opt: Option<Statistics>,
@@ -116,7 +116,7 @@ pub fn align(
     let alass = Aligner::new(list_nonoverlapping, ref_nonoverlapping, statistics_opt);
 
     // get deltas for non-overlapping timespans
-    let deltas = alass.align_with_splits(progress_handler_opt, split_penalty_normalized, speed_optimization);
+    let deltas = alass.align_with_splits(progress_handler_opt, split_penalty / 1000.0, speed_optimization);
 
     // get deltas for overlapping timspan-list
     list_indices.into_iter().map(|i| deltas[i]).collect()
