@@ -121,7 +121,6 @@ define_error!(InputVideoError, InputVideoErrorKind);
 #[derive(Clone, Eq, PartialEq, Debug, Fail)]
 pub enum InputVideoErrorKind {
     FailedToDecode { path: PathBuf },
-    VadCreationFailed,
     VadAnalysisFailed,
 }
 
@@ -131,7 +130,6 @@ impl fmt::Display for InputVideoErrorKind {
             InputVideoErrorKind::FailedToDecode { path } => {
                 write!(f, "failed to extract voice segments from file '{}'", path.display())
             }
-            InputVideoErrorKind::VadCreationFailed => write!(f, "failed to create voice-activity-detection module"),
             InputVideoErrorKind::VadAnalysisFailed => write!(f, "failed to analyse audio segment for voice activity"),
         }
     }

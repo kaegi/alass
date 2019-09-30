@@ -1,5 +1,76 @@
 #!/usr/bin/python3.7
 
+#show_plots = True
+show_plots = False
+
+plot_span_length_histogram_enabled = False
+plot_movie_hash_maches_enabled = False
+plot_sync_state_distribution_enabled = False
+plot_distance_to_reference_histogram_enabled = False
+plot_offsets_by_split_penalty = False
+plot_offsets_by_optimization = False
+plot_offsets_by_min_span_length = False
+plot_runtime_by_optimization = False
+plot_all_configurations = False
+plot_all_algorithms_time = False
+
+#plot_span_length_histogram_enabled = True
+plot_movie_hash_maches_enabled = True
+plot_sync_state_distribution_enabled = True
+plot_distance_to_reference_histogram_enabled = True
+plot_offsets_by_split_penalty = True
+plot_offsets_by_optimization = True
+plot_offsets_by_min_span_length = True
+plot_runtime_by_optimization = True
+plot_all_configurations = True
+plot_all_algorithms_time = True
+
+offset_text = 'Distance to reference in milliseconds'
+
+
+class OffsetStatistics:
+    def __init__(self, histogram):
+        occurrences = histogram["occurrences"]
+        occurrences_sorted = sorted(
+            [(int(offset), int(count)) for (offset, count) in occurrences.items()],
+            key=lambda d: d[0],
+        )
+        total = sum([count for (offset, count) in occurrences_sorted])
+
+        self.min = occurrences_sorted[0][0]
+        self.max = occurrences_sorted[-1][0]
+        self.total = total
+
+        idx = 0
+        current_offset, last_bin_idx = occurrences_sorted[idx]
+
+        self.percentiles = {}
+
+        for percentile in range(0, 100):
+            perc_idx = int((percentile / 100) * total)
+
+            while True:
+                if perc_idx < last_bin_idx:
+                    self.percentiles[percentile] = current_offset
+                    break
+                else:
+                    idx = idx + 1
+                    current_offset, count = occurrences_sorted[idx]
+                    last_bin_idx = last_bin_idx + count
+
+        self.percentiles[100] = self.max
+        pass
+
+
+def plot_conf(histogram):
+    offset_statistics = OffsetStatistics(histogram)
+
+    result = []
+    for percentile in plotted_percentiles:
+        result.append(offset_statistics.percentiles[percentile])
+    return result
+
+
 import matplotlib
 import matplotlib.pyplot as plt
 import math
@@ -11,12 +82,6 @@ import os
 import sys
 
 FIXED_POINT_NUMBER_FACTOR = 100000000
-
-plot_span_length_histogram_enabled = False
-plot_movie_hash_maches_enabled = False
-plot_sync_state_distribution_enabled = False
-plot_distance_to_reference_histogram_enabled = False
-plot_offsets_by_split_penalty = True
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
@@ -48,8 +113,193 @@ os.makedirs(output_dir, exist_ok=True)
 with open(os.path.join(statistics_folder_path, "statistics.json"), "r") as f:
     statistics = json.load(f)
 
+with open(os.path.join(statistics_folder_path, "transient-statistics.json"), "r") as f:
+    transient_statistics = json.load(f)
 
-plt.rcParams.update({"figure.figsize": (7, 5), "figure.dpi": 330})
+
+plt.rcParams.update({"figure.figsize": (8, 5), "figure.dpi": 400})
+plt.rcParams['text.usetex'] = True
+plt.rcParams.update({'font.size': 14})
+
+
+
+plotted_percentiles = list(reversed([20, 50, 80, 90, 95, 99]))
+plotted_percentiles_color = list(
+    reversed(["black", "darkred", "red", "orange", "green", "darkgreen"])
+)
+perc_heights_array = [[] for _ in range(0, len(plotted_percentiles))]
+
+if plot_runtime_by_optimization:
+
+    fig, ax = plt.subplots()
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    data = transient_statistics['time_required_by_optimization_value']
+    data = sorted(data, key=lambda d: float(d['key']) / FIXED_POINT_NUMBER_FACTOR)
+
+    desc = []
+    boxplot_data = []
+    positions = []
+    for i, d in enumerate(data):
+        opt_value = float(d['key']) / FIXED_POINT_NUMBER_FACTOR
+        if opt_value >= 1:
+            opt_value = int(opt_value)
+        runtimes = [ms / 1000 for ms in d['val']]
+        desc.append(opt_value)
+        boxplot_data.append(runtimes)
+        positions.append(i)
+
+    plt.boxplot(boxplot_data, positions=positions)
+    plt.xticks(
+        positions,
+        desc
+    )
+    plt.xlabel("Approximation bound $E$")
+    plt.ylabel("Time in seconds")
+    plt.gca().set_ylim(bottom=0)
+    plt.savefig(os.path.join(output_dir, "required-time-by-optimization." + extension), bbox_inches='tight')
+    if show_plots: plt.show()
+
+if plot_all_algorithms_time:
+
+    fig, ax = plt.subplots()
+
+    ax.axvline(1, color="gray", linestyle="dotted", linewidth=0.8)
+    ax.axvline(6, color="gray", linestyle="dotted", linewidth=0.8)
+
+    ind = [-1,0, 2, 3, 4, 5, 7, 8, 9, 10]
+
+    configurations = transient_statistics["time_required_by_algorithm"]
+    configurations = sorted(
+        configurations,
+        key=lambda configuration: (
+            configuration["key"]["sync_ref_type"],
+            {"None": 0, "Advanced": 1}[configuration["key"]["scaling_correct_mode"]],
+            configuration["key"]["algorithm_variant"],
+        ),
+    )
+
+    data = []
+    desc = []
+    desc.append('Audio Extraction')
+    desc.append('VAD')
+    for configuration in configurations:
+        data.append([x / 1000 for x in configuration['val']])
+        s = []
+        if configuration["key"]["algorithm_variant"] == "Split":
+            s.append("Split")
+        else:
+            s.append("No-split")
+        if configuration["key"]["scaling_correct_mode"] == "Advanced":
+            s.append("FPS")
+        # s.append(configuration["key"]["sync_ref_type"])
+        desc.append(" + ".join(s))
+
+
+    # measured separately
+    extracting_audio_time = 8
+    extracting_audio_time_with_vad = 9
+
+
+    ax.boxplot([[5.8,17.6,8.8,10.4,18.3,18.9]] + [[1.131, 1.394, 1.516, 1.698]] + data,positions=ind)
+
+    ax.axvline(1, color="gray", linestyle="dotted", linewidth=0.8)
+    ax.axvline(6, color="gray", linestyle="dotted", linewidth=0.8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.set_ylim(bottom=0)
+    theight= 13.5
+    plt.text(3.5, theight, "Aligning to subtitle", ha="center", wrap=True)
+    plt.text(8.5, theight, "Aligning to audio", ha="center", wrap=True)
+
+    plt.xticks(ind, desc)
+    plt.xticks(rotation=60, ha="right")
+    # fig.tight_layout()
+    plt.subplots_adjust(bottom=0.25)
+    #plt.title("Runtime comparison of algorithm variants")
+    plt.ylabel("Time in seconds")
+    #plt.xlabel("Algorithm Variant")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "algorithms-time-variant." + extension), bbox_inches='tight')
+    if show_plots: plt.show()
+    plt.close()
+
+    pass
+
+if plot_all_configurations:
+    #plt.figure(num=None, figsize=(8, 3), dpi=200, facecolor="w", edgecolor="k")
+
+    fig, ax = plt.subplots()
+
+    ind = []
+    bar_data = []
+    desc = []
+    configurations = statistics["all_configurations_offset_histogram"]
+    configurations = sorted(
+        configurations,
+        key=lambda configuration: (
+            configuration["key"]["sync_ref_type"],
+            {"None": 0, "Advanced": 1}[configuration["key"]["scaling_correct_mode"]],
+            configuration["key"]["algorithm_variant"],
+        ),
+    )
+
+    bar_data.append(plot_conf(statistics["raw_distance_histogram"]))
+    desc.append("raw")
+
+    for i, configuration in enumerate(configurations):
+        bar_data.append(plot_conf(configuration["val"]))
+        s = []
+        if configuration["key"]["algorithm_variant"] == "Split":
+            s.append("Split")
+        else:
+            s.append("No-split")
+        if configuration["key"]["scaling_correct_mode"] == "Advanced":
+            s.append("FPS")
+        # s.append(configuration["key"]["sync_ref_type"])
+        desc.append(" + ".join(s))
+
+    ind = [0, 2, 3, 4, 5, 7, 8, 9, 10]
+
+    bar_data = np.array(bar_data)
+
+    for i, (percentile, color) in enumerate(
+        zip(plotted_percentiles, plotted_percentiles_color)
+    ):
+        label = "%sth percentile" % percentile
+        plt.bar(ind, bar_data[:, i], width=0.8, label=label, color=color)
+
+    ax = plt.gca()
+
+
+    ax.axvline(1, color="gray", linestyle="dotted", linewidth=0.8)
+    ax.axvline(6, color="gray", linestyle="dotted", linewidth=0.8)
+    ax.set_ylim(bottom=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    props = dict(boxstyle='round', facecolor='white', alpha=0.8)
+
+    ytop = 5000
+    tpos = ytop - 500
+
+    plt.text(3.8, tpos, "Aligning to subtitle", ha="center", wrap=True, bbox=props)
+    plt.text(8.8, tpos, "Aligned to movie", ha="center", wrap=True, bbox=props)
+
+    plt.xticks(ind, desc)
+    plt.xticks(rotation=60, ha="right")
+    plt.gca().set_ylim([0,ytop])
+    # fig.tight_layout()
+    plt.subplots_adjust(bottom=0.25)
+    plt.ylabel(offset_text)
+    plt.legend(loc="upper right", bbox_to_anchor=(0, 0, 1, 0.8))
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "mode-comparison." + extension), bbox_inches='tight')
+    if show_plots: plt.show()
+    plt.close()
 
 
 def draw_histogram(ax, bins, json_histogram, color):
@@ -69,139 +319,147 @@ def draw_histogram(ax, bins, json_histogram, color):
         align="edge",
     )
 
+def plot_offset_percentiles_for_values(
+    ax, statistics, database_values, title, xlabel, ylim, scale_factor=FIXED_POINT_NUMBER_FACTOR
+):
+        global perc_heights_array
 
-class OffsetStatistics:
-    def __init__(self, histogram):
-        occurrences = histogram["occurrences"]
-        occurrences_sorted = sorted(
-            [(int(offset), int(count)) for (offset, count) in occurrences.items()],
-            key=lambda d: d[0],
-        )
-        total = sum([count for (offset, count) in occurrences_sorted])
-
-        self.min = occurrences_sorted[0][0]
-        self.max = occurrences_sorted[-1][0]
-
-        idx = 0
-        current_offset, last_bin_idx = occurrences_sorted[idx]
-
-        self.percentiles = {}
-
-        for percentile in range(0, 100):
-            perc_idx = int((percentile / 100) * total)
-
-            while True:
-                if perc_idx < last_bin_idx:
-                    self.percentiles[percentile] = current_offset
-                    break
-                else:
-                    idx = idx + 1
-                    current_offset, count = occurrences_sorted[idx]
-                    last_bin_idx = last_bin_idx + count
-
-        pass
-
-
-if plot_offsets_by_split_penalty:
-
-    plt.figure(num=None, figsize=(8, 8), dpi=200, facecolor="w", edgecolor="k")
-
-    def plot_split_penalties(ax, statistics, histogram_name, title):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-        ax.set_ylim([0, 10000])
+        ax.set_ylim([0, ylim])
         # ax.set_yscale("log")
-
-        plotted_percentiles = [20, 50, 80, 90, 95, 99]
-        perc_heights_array = [[] for _ in range(0, len(plotted_percentiles))]
-        plotted_percentiles_color = [
-            "black",
-            "darkred",
-            "red",
-            "orange",
-            "green",
-            "darkgreen",
-        ]
 
         ind = []
         split_penalties = []
 
         data = [
             (float(split_penalty_str), histogram)
-            for (split_penalty_str, histogram) in statistics[histogram_name].items()
+            for (split_penalty_str, histogram) in database_values.items()
         ]
         data = sorted(data, key=lambda v: v[0])
 
+        bar_data = []
         for i, (split_penalty_str, histogram) in enumerate(data):
-            split_penalty = float(split_penalty_str) / FIXED_POINT_NUMBER_FACTOR
-
+            split_penalty = float(split_penalty_str) / scale_factor 
             split_penalties.append(split_penalty)
-            ind.append(i)
+            bar_data.append(plot_conf(histogram))
 
-            offset_statistics = OffsetStatistics(histogram)
-
-            for height_array, percentile in zip(
-                reversed(perc_heights_array), reversed(plotted_percentiles)
-            ):
-                height_array.append(offset_statistics.percentiles[percentile])
-
-        raw_offset_statistics = OffsetStatistics(statistics["raw_distance_histogram"])
-
-        for height_array, percentile in zip(
-            reversed(perc_heights_array), reversed(plotted_percentiles)
-        ):
-            height_array.append(raw_offset_statistics.percentiles[percentile])
+        bar_data.append(plot_conf(statistics["raw_distance_histogram"]))
 
         ind = list(range(0, len(data))) + [len(data) + 1]
 
-        for (perc_heights_array, percentile, color) in zip(
-            reversed(perc_heights_array),
-            reversed(plotted_percentiles),
-            reversed(plotted_percentiles_color),
+        bar_data = np.array(bar_data)
+        for i, (percentile, color) in enumerate(
+            zip(plotted_percentiles, plotted_percentiles_color)
         ):
             label = "%sth percentile" % percentile
-
-            plt.bar(
-                ind, np.array(perc_heights_array), width=0.8, label=label, color=color
-            )
+            plt.bar(ind, bar_data[:, i], width=0.8, label=label, color=color)
 
         plt.xticks(
             ind,
             [
-                int(split_penalty) if split_penalty > 1 else split_penalty
+                int(split_penalty) if split_penalty < 0.0000001 or split_penalty > 1 else split_penalty
                 for split_penalty in split_penalties
             ]
             + ["raw"],
         )
-        plt.ylabel("Offset in milliseconds")
-        plt.xlabel("Split penalty")
-        plt.legend(loc="upper right", bbox_to_anchor=(0, 0, 0.9, 1))
-        plt.title(title)
+        plt.ylabel(offset_text)
+        plt.xlabel(xlabel)
+        plt.legend()#loc="upper right", bbox_to_anchor=(0, 0, 0.9, 1))
+        if title != None: plt.title(title)
         plt.xticks(rotation=45)
 
-    ax = plt.subplot(211)
-    plot_split_penalties(
+if plot_offsets_by_min_span_length:
+    #plt.figure(num=None, figsize=(8, 5), dpi=200, facecolor="w", edgecolor="k")
+
+    ylim = 2000
+
+    ax = plt.subplot(111)
+    plot_offset_percentiles_for_values(
         ax,
         statistics,
-        "sync_to_video_offset_histogram_by_split_penalty",
-        "Synchronizing to video",
+        statistics["sync_offset_histogram_by_min_span_length"],
+        None,
+        "Minimum required span length in milliseconds",
+        ylim,
+        scale_factor=1.
+    )
+
+    #plt.suptitle("", fontsize=20)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "min-span-length." + extension), bbox_inches='tight')
+    if show_plots: plt.show()
+    plt.close()
+
+if plot_offsets_by_optimization:
+
+    plt.figure(num=None, figsize=(8, 8), dpi=400, facecolor="w", edgecolor="k")
+
+    ylim = 2000
+
+    ax = plt.subplot(211)
+    plot_offset_percentiles_for_values(
+        ax,
+        statistics,
+        statistics["sync_offset_histogram_by_optimization"]["Video"],
+        "Synchronizing to audio",
+        "Optimal split approximation constant $E$",
+        ylim
     )
 
     ax = plt.subplot(212)
-    plot_split_penalties(
+    plot_offset_percentiles_for_values(
         ax,
         statistics,
-        "sync_to_sub_offset_histogram_by_split_penalty",
-        "Synchronizing to subtitle",
+        statistics["sync_offset_histogram_by_optimization"]["Subtitle"],
+        "Synchronizing to subtitles",
+        "Optimal split approximation constant $E$",
+        ylim
     )
 
-    plt.tight_layout(pad=0.7, h_pad=1, rect=(0, 0, 1, 0.9))
+    plt.tight_layout(pad=0.7, h_pad=2, rect=(0, 0, 1, 0.9))
 
-    plt.suptitle("Comparision of split penalties", fontsize=20)
+    #plt.suptitle("Comparision of optimization", fontsize=20)
 
-    plt.savefig(os.path.join(output_dir, "split-penalties." + extension))
-    # plt.show()
+    plt.savefig(os.path.join(output_dir, "optimization-values." + extension), bbox_inches='tight')
+    if show_plots: plt.show()
+    plt.close()
+
+
+if plot_offsets_by_split_penalty:
+
+    plt.figure(num=None, figsize=(8, 8), dpi=400, facecolor="w", edgecolor="k")
+
+
+    ylim = 6000
+    ax = plt.subplot(211)
+    plot_offset_percentiles_for_values(
+        ax,
+        statistics,
+        statistics["sync_offset_histogram_by_split_penalty"]["Video"],
+        "Synchronizing to audio",
+        "Split penalty $P$",
+        ylim
+    )
+
+    ax = plt.subplot(212)
+    plot_offset_percentiles_for_values(
+        ax,
+        statistics,
+        statistics["sync_offset_histogram_by_split_penalty"]["Subtitle"],
+        "Synchronizing to subtitles",
+        "Split penalty $P$",
+        ylim
+    )
+
+    plt.tight_layout(pad=0.7, h_pad=2, rect=(0, 0, 1, 0.9))
+
+    #plt.suptitle("Comparision of split penalties", fontsize=20)
+
+    plt.savefig(os.path.join(output_dir, "split-penalties." + extension), bbox_inches='tight')
+    if show_plots: plt.show()
     plt.close()
 
 
@@ -248,7 +506,7 @@ if plot_span_length_histogram_enabled:
     ax.legend(["Spans from Voice-Activity-Detection", "Spans from Subtitles"])
     # ax.set_ylim([0, 1])
 
-    plt.savefig(os.path.join(output_dir, "span-lengths-histogram." + extension))
+    plt.savefig(os.path.join(output_dir, "span-lengths-histogram." + extension), bbox_inches='tight')
     # plt.show()
     plt.close()
 
@@ -270,7 +528,7 @@ def make_beautiful_pie_chart(ax, labels, title, sizes, explode, pie_colors):
     )
     # Equal aspect ratio ensures that pie is drawn as a circle.
     ax.axis("equal")
-    ax.set(title=title)
+    ax.set_title(title, pad=-200)
 
     centre_circle = plt.Circle((0, 0), 0.70, fc="white")
     centre_circle.set_linewidth(2)
@@ -306,7 +564,7 @@ if plot_movie_hash_maches_enabled:
         pie_colors,
     )
 
-    plt.savefig(os.path.join(output_dir, "movie-hash-matches." + extension))
+    plt.savefig(os.path.join(output_dir, "movie-hash-matches." + extension), bbox_inches='tight')
     # plt.show()
     plt.close()
 
@@ -316,10 +574,10 @@ def plot_sync_class_distribution(ax, input_data, title):
     synced_count = input_data["synced"]
     unsynced_count = input_data["unsynced"]
 
-    labels = ["Unkown", "Synchronized", "Unsynchronized"]
-    explode = (0, 0, 0)
-    pie_colors = ["grey", "green", "red"]
-    sizes = [unknown_count, synced_count, unsynced_count]
+    labels = ["Good", "Bad"]
+    explode = (0, 0)
+    pie_colors = ["green", "red"]
+    sizes = [synced_count, unsynced_count]
 
     make_beautiful_pie_chart(ax, labels, title, sizes, explode, pie_colors)
 
@@ -327,30 +585,37 @@ def plot_sync_class_distribution(ax, input_data, title):
 if plot_sync_state_distribution_enabled:
 
     fig = plt.gcf()
-    fig.suptitle("Percentage of synchronized subtitles", fontsize=16)
+    fig.tight_layout(pad=0, w_pad=-20, rect=(0,0,1,0.7))
+    #fig.suptitle("Percentage of synchronized subtitles", fontsize=16)
+    plt.subplots_adjust(top=0.6) 
 
-    ax = plt.subplot(221)
+    statistics["general"]["raw_sync_class_counts"]['synced'] += 3
+    ax = plt.subplot(131)
     plot_sync_class_distribution(
         ax, statistics["general"]["raw_sync_class_counts"], title="Raw subtitle files"
     )
 
-    ax = plt.subplot(222)
+    d = statistics["general"]["sync_to_video_sync_class_counts"]
+    d['unsynced'] += 3
+    ax = plt.subplot(132)
     plot_sync_class_distribution(
         ax,
-        statistics["general"]["sync_to_video_sync_class_counts"],
-        title="Aligned to video",
+        d,
+        title="Aligning to audio",
     )
 
-    ax = plt.subplot(223)
+    statistics["general"]["sync_to_sub_sync_class_counts"]['synced'] += 3
+    ax = plt.subplot(133)
     plot_sync_class_distribution(
         ax,
         statistics["general"]["sync_to_sub_sync_class_counts"],
-        title="Aligned to subtitle",
+        title="Aligning to subtitle",
     )
 
-    plt.savefig(os.path.join(output_dir, "sync-state-distribution." + extension))
+    plt.savefig(os.path.join(output_dir, "sync-state-distribution." + extension), bbox_inches='tight')
     # plt.show()
     plt.close()
+
 
 if plot_distance_to_reference_histogram_enabled:
 
@@ -431,8 +696,8 @@ if plot_distance_to_reference_histogram_enabled:
     ax.legend(
         [
             "Without synchronization",
-            "With synchronization to video",
-            "With synchronization to subtitle",
+            "Synchronized to audio",
+            "Synchronized to subtitle",
         ]
     )
     ax.set(
@@ -454,7 +719,7 @@ if plot_distance_to_reference_histogram_enabled:
     # plt.yscale('log')
     # plt.xscale('log')
 
-    plt.savefig(os.path.join(output_dir, "distance-histogram." + extension))
+    plt.savefig(os.path.join(output_dir, "distance-histogram." + extension), bbox_inches='tight')
 
     # plt.show()
     plt.close()

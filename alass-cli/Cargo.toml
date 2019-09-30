@@ -1,6 +1,6 @@
 [package]
 name = "alass-cli"
-version = "1.1.0"
+version = "2.0.0"
 authors = ["kaegi <kaegi.dev@gmail.com>"]
 description = "Automatic Language-Agnostic Subtitle Synchronization (Command Line Tool)"
 repository = "https://github.com/kaegi/alass"
@@ -13,19 +13,15 @@ edition = "2018"
 [features]
 default = ["ffmpeg-binary"]
 
-# this enables writing of statistics but incurs a performance penalty
-# of 15% even when not used by the user of the program
-statistics = ["alass-core/statistics"]
-
 # use exactly one of these two features
 ffmpeg-binary = ["byteorder"] 
 # FFMPEG-LIB ffmpeg-library = ["ffmpeg-sys"]
 
 
 [dependencies]
-alass-core = { version = "1.1.0", path = "../alass-core" }
-webrtc-vad = "0.1.0"
-subparse = "0.6.1"
+alass-core = { version = "2.0.0", path = "../alass-core" }
+webrtc-vad = "0.4.0"
+subparse = "0.6.2"
 
 clap = "2.33.0"
 pbr = "1.0.0-alpha.2"
@@ -40,6 +36,7 @@ byteorder = { version = "1.3.2", optional = true }
 rmp-serde = "0.14.0"
 threadpool = "1.7.1"
 ctrlc = "3.1.3"
+rand = "0.7.2"
 
 # FFMPEG-LIB [dependencies.ffmpeg-sys]
 # FFMPEG-LIB optional = true

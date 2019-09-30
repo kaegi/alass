@@ -27,6 +27,3 @@ clean_windows64:
 package_linux64:
 	cargo build --release --target x86_64-unknown-linux-musl
 	cp ./target/x86_64-unknown-linux-musl/release/alass-cli ./target/alass-linux64
-
-clean_windows64:
-	rm target/alass-linux64

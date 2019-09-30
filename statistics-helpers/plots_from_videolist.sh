@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 PREFIX=./generated-data
 
-export VIDEOLIST_FILE="./videos.list"
+export VIDEOLIST_FILE="./test_data/videos.list"
 export CACHE_DIR="$PREFIX/cache"
 export DATABASE_DIR="$PREFIX/1-database"
 export STATISTICS_DIR="$PREFIX/2-statistics"
@@ -56,21 +56,22 @@ if [ "$skip_statistics" = "1" ]; then
 	echo "Skipping statistics generation as requested by user!"
 else
 	cargo run \
-		--release \
 		--example=generate_statistics_from_database \
+		--release \
 		-- \
 		--database-dir "$DATABASE_DIR" --statistics-dir "$STATISTICS_DIR" --cache-dir "$CACHE_DIR" \
 		--split-penalties 0.05,0.1,0.25,0.5,1,2,3,4,5,6,7,8,9,10,20,30,50,100,1000 \
+		--optimization-values 0.05,0.1,0.2,0.5,1,2,3,4,5,7,10,15,20,25,30 \
 		--default-split-penalty 6 \
-		--default-min-span-length 200 \
+		--default-min-span-length 500 \
+		--min-span-lengths  0,100,200,300,400,500,600,800,1000,1250,1500,2000  \
 		--default-optimization 2 \
-		--default-max-good-sync-offset 300,500,1000,1500 \
-		--default-required-good-sync-spans-percentage 25,50,75,95  \
-		--num-threads 4 \
-		#--split-penalties 0.25,0.5,1,2,3,4,5,6,8,10,30,100 \
-		#--quiet
-		#--clean-cache-line-pairs \
- # 200ms/25%, 500ms/50%, 1000ms/75%, 1500ms/95%
+		--default-max-good-sync-offset 300,500,1000,1300 \
+		--default-required-good-sync-spans-percentage 25,70,95,99  \
+		--num-threads 2 \
+		--only-every-nth-sub 1 \
+		#--only-transient-statistics
+		#--only-general-statistics \
 	echo "Generating statistics done!"
 fi
 

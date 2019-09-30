@@ -285,7 +285,7 @@ impl VideoFileHandler {
         }
 
         let vad_processor = WebRtcFvad {
-            fvad: Vad::new(8000).map_err(|_| InputVideoErrorKind::VadCreationFailed)?,
+            fvad: Vad::new_with_rate(SampleRate::Rate8kHz),
             vad_buffer: Vec::new(),
         };
 
@@ -298,20 +298,28 @@ impl VideoFileHandler {
 
         let mut voice_segments: Vec<(i64, i64)> = Vec::new();
         let mut voice_segment_start: i64 = 0;
-        let mut last_was_voice_segment = false;
+
+        let combine_with_distance_lower_than = 0 / 10;
+
+        let mut last_segment_end: i64 = 0;
+        let mut already_saved_span = true;
 
         for (i, is_voice_segment) in vad_buffer.into_iter().chain(std::iter::once(false)).enumerate() {
-            match (last_was_voice_segment, is_voice_segment) {
-                (false, false) | (true, true) => {}
-                (false, true) => {
-                    voice_segment_start = i as i64;
+            let i = i as i64;
+
+            if is_voice_segment {
+                last_segment_end = i;
+                if already_saved_span {
+                    voice_segment_start = i;
+                    already_saved_span = false;
                 }
-                (true, false) => {
-                    voice_segments.push((voice_segment_start, i as i64 - 1));
+            } else {
+                // not a voice segment
+                if i - last_segment_end >= combine_with_distance_lower_than && !already_saved_span {
+                    voice_segments.push((voice_segment_start, last_segment_end));
+                    already_saved_span = true;
                 }
             }
-
-            last_was_voice_segment = is_voice_segment;
         }
 
         let subparse_timespans: Vec<subparse::timetypes::TimeSpan> = voice_segments
@@ -387,6 +395,52 @@ impl InputFileHandler {
             video_handler.filter_with_min_span_length_ms(min_vad_span_length_ms);
         }
     }
+}
+
+pub fn guess_fps_ratio(
+    ref_spans: &[alass_core::TimeSpan],
+    in_spans: &[alass_core::TimeSpan],
+    ratios: &[f64],
+    mut progress_handler: impl alass_core::ProgressHandler,
+) -> (Option<usize>, alass_core::TimeDelta) {
+    progress_handler.init(ratios.len() as i64);
+    let (delta, score) = alass_core::align_nosplit(
+        ref_spans,
+        in_spans,
+        alass_core::overlap_scoring,
+        alass_core::NoProgressHandler,
+    );
+    progress_handler.inc();
+
+    //let desc = ["25/24", "25/23.976", "24/25", "24/23.976", "23.976/25", "23.976/24"];
+    //println!("score 1: {}", score);
+
+    let (mut opt_idx, mut opt_delta, mut opt_score) = (None, delta, score);
+
+    for (scale_factor_idx, scaling_factor) in ratios.iter().cloned().enumerate() {
+        let stretched_in_spans: Vec<alass_core::TimeSpan> =
+            in_spans.iter().map(|ts| ts.scaled(scaling_factor)).collect();
+
+        let (delta, score) = alass_core::align_nosplit(
+            ref_spans,
+            &stretched_in_spans,
+            alass_core::overlap_scoring,
+            alass_core::NoProgressHandler,
+        );
+        progress_handler.inc();
+
+        //println!("score {}: {}", desc[scale_factor_idx], score);
+
+        if score > opt_score {
+            opt_score = score;
+            opt_idx = Some(scale_factor_idx);
+            opt_delta = delta;
+        }
+    }
+
+    progress_handler.finish();
+
+    (opt_idx, opt_delta)
 }
 
 pub fn print_error_chain(error: failure::Error) {

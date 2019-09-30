@@ -15,19 +15,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::rating_type::{Rating, RatingDelta, RatingDeltaDelta, RatingDeltaExt, RATING_PRECISION};
+use crate::rating_type::{Rating, RatingDelta, RatingDeltaDelta, RatingDeltaExt, RatingExt};
 use crate::segments::{
-    add_rating_iterators, combined_maximum_of_dual_iterators, zero_rating_iterator, DifferentialRatingBufferBuilder,
-    PositionBuffer, RatingBuffer, RatingIterator, RatingSegment, SeparateDualBuffer,
+    combined_maximum_of_dual_iterators, DifferentialRatingBufferBuilder, OffsetBuffer, RatingBuffer, RatingIterator,
+    RatingSegment, SeparateDualBuffer,
 };
-use crate::statistics::Statistics;
 use crate::time_types::{TimeDelta, TimePoint, TimeSpan};
 
-use arrayvec::ArrayVec;
-use std::cell::RefCell;
-use std::cmp::min;
-use std::iter::once;
-use std::rc::Rc;
+use std::convert::TryInto;
 
 /// Use this trait if you want more detailed information about the progress of the align operation
 /// (which might take some seconds).
@@ -47,74 +42,138 @@ pub trait ProgressHandler {
     fn finish(&mut self) {}
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+/// `impl ProgressHandler` with empty functions
+pub struct NoProgressHandler;
+impl ProgressHandler for NoProgressHandler {}
+
 /// The "main" structure which holds the infomation needed to align the subtitles to each other.
-pub struct Aligner {
-    /// List of incorrect subtitles which are aligned with this library. This
-    /// list will always be non-empty.
-    list: Vec<TimeSpan>,
-
-    /// The fixed reference subtitles. This list will always be non-empty.
-    reference: Vec<TimeSpan>,
-
-    /// Contains the range in which the incorrect subtitles can be moved.
-    buffer_timespan: TimeSpan,
-
-    #[allow(dead_code)]
-    statistics: Option<Rc<RefCell<Statistics>>>,
-}
+pub struct Aligner;
 
 impl Aligner {
-    /// In each list no time span should intersect any other and both list are
-    /// sorted by starting times.
-    pub fn new(list: Vec<TimeSpan>, reference: Vec<TimeSpan>, statistics_opt: Option<Statistics>) -> Aligner {
-        assert!(list.len() > 0);
-        assert!(reference.len() > 0);
+    pub fn get_offsets_bounds(ref_spans: &[TimeSpan], in_spans: &[TimeSpan]) -> (TimeDelta, TimeDelta) {
+        assert!(ref_spans.len() > 0);
+        assert!(in_spans.len() > 0);
 
-        /*println!("{} reference lines", reference.len());
-        println!("{} incorrect lines", list.len());*/
+        let in_start: TimePoint = (*in_spans.first().unwrap()).start();
+        let in_end: TimePoint = (*in_spans.last().unwrap()).end();
 
-        let incorrect_start: TimePoint = (*list.first().unwrap()).start();
-        let incorrect_end: TimePoint = (*list.last().unwrap()).end();
+        let ref_start: TimePoint = (*ref_spans.first().unwrap()).start();
+        let ref_end: TimePoint = (*ref_spans.last().unwrap()).end();
 
-        let reference_start: TimePoint = (*reference.first().unwrap()).start();
-        let reference_end: TimePoint = (*reference.last().unwrap()).end();
+        assert!(in_start <= in_end);
+        assert!(ref_start <= ref_end);
 
-        // this is the timespan length which can contain all incorrect subtitles
-        let list_timespan = incorrect_end - incorrect_start;
+        (ref_start - in_end, ref_end - in_start)
+    }
 
-        let start = reference_start - list_timespan - TimeDelta::one();
-        let end = reference_end + list_timespan + TimeDelta::one();
+    pub fn align_constant_delta_bucket_sort(
+        ref_spans: &[TimeSpan],
+        in_spans: &[TimeSpan],
+        score_fn: impl Fn(TimeDelta, TimeDelta) -> f64 + Copy,
+    ) -> (TimeDelta, Rating) {
+        let (min_offset, max_offset) = Self::get_offsets_bounds(ref_spans, in_spans);
 
-        // It might be possible that all corrected subtiles fit in the reference list
-        // timeframe. It they don't
-        // we need to provide extra space, so that the produting corrected subtitles
-        // still fit into the
-        // whole [start, end] timeframe. Because `list_timespan` is the length of the
-        // whole incorrect subtitle file,
-        // we can just extend the reference timeframe by `list_timespan` on both ends.
-        let min_offset: TimeDelta = start - incorrect_start;
-        let max_offset: TimeDelta = end - incorrect_start;
+        let len: usize = (max_offset - min_offset).as_i64().try_into().unwrap();
 
-        assert!(min_offset <= max_offset);
+        //let ta = std::time::Instant::now();
+        let mut deltas: Vec<RatingDeltaDelta> = vec![RatingDeltaDelta::zero(); len + 1];
 
-        Aligner {
-            list: list,
-            reference: reference,
-            buffer_timespan: TimeSpan::new(start, end),
-            statistics: statistics_opt.map(|s| Rc::new(RefCell::new(s))),
+        //let tb = std::time::Instant::now();
+        for reference_ts in ref_spans {
+            for incorrect_ts in in_spans {
+                let rating_delta_delta: RatingDeltaDelta =
+                    RatingDelta::compute_rating_delta(incorrect_ts.len(), reference_ts.len(), score_fn);
+
+                #[inline(always)]
+                fn accum(d: &mut [RatingDeltaDelta], idx: TimeDelta, x: RatingDeltaDelta, sigma_min: TimeDelta) {
+                    let idx: usize = (idx - sigma_min).as_i64().try_into().unwrap();
+                    d[idx] = d[idx] + x;
+                };
+
+                accum(
+                    &mut deltas,
+                    reference_ts.start() - incorrect_ts.end(),
+                    rating_delta_delta,
+                    min_offset,
+                );
+                accum(
+                    &mut deltas,
+                    reference_ts.end() - incorrect_ts.end(),
+                    -rating_delta_delta,
+                    min_offset,
+                );
+                accum(
+                    &mut deltas,
+                    reference_ts.start() - incorrect_ts.start(),
+                    -rating_delta_delta,
+                    min_offset,
+                );
+                accum(
+                    &mut deltas,
+                    reference_ts.end() - incorrect_ts.start(),
+                    rating_delta_delta,
+                    min_offset,
+                );
+            }
+        }
+        //let tc = std::time::Instant::now();
+
+        // compute maximum rating
+        let mut delta: RatingDelta = RatingDelta::zero();
+        let mut rating: Rating = Rating::zero();
+        let mut maximum: (Rating, TimeDelta) = (Rating::zero(), min_offset);
+        //let mut nonzero: i64 = 0;
+        for (sigma, jump_value) in deltas.into_iter().enumerate() {
+            /*if !RatingDeltaDelta::is_zero(jump_value) {
+                nonzero = nonzero + 1;
+            }*/
+            rating += delta;
+            delta += jump_value;
+            if rating > maximum.0 {
+                maximum = (rating, sigma as i64 * TimeDelta::one() + min_offset);
+            }
+        }
+
+        /*let td = std::time::Instant::now();
+        println!("init {}ms", (tb - ta).as_millis());
+        println!("insert {}ms", (tc - tb).as_millis());
+        println!("calc {}ms", (td - tc).as_millis());
+
+        println!(
+            "{}MB {}% nonzero {}% max",
+            len * std::mem::size_of::<RatingDeltaDelta>() / (1024 * 1024),
+            nonzero as f64 / len as f64 * 100.0,
+            (self.list.len() * self.reference.len() * 4) as f64 / len as f64 * 100.0
+        );*/
+
+        assert!(Rating::is_zero(rating));
+
+        return (maximum.1, maximum.0);
+    }
+
+    pub fn align_constant_delta(
+        ref_spans: &[TimeSpan],
+        in_spans: &[TimeSpan],
+        score_fn: impl Fn(TimeDelta, TimeDelta) -> f64 + Copy,
+    ) -> (TimeDelta, Rating) {
+        let (min_offset, max_offset) = Self::get_offsets_bounds(ref_spans, in_spans);
+
+        let num_slots: usize = TryInto::<usize>::try_into((max_offset - min_offset).as_i64()).unwrap();
+        let num_entries: usize = in_spans.len() * ref_spans.len() * 4;
+
+        if num_entries as f64 > num_slots as f64 * 0.1 {
+            Self::align_constant_delta_bucket_sort(ref_spans, in_spans, score_fn)
+        } else {
+            Self::align_constant_delta_merge_sort(ref_spans, in_spans, score_fn)
         }
     }
 
-    pub fn get_start(&self) -> TimePoint {
-        self.buffer_timespan.start()
-    }
-
-    pub fn get_end(&self) -> TimePoint {
-        self.buffer_timespan.end()
-    }
-
-    #[allow(dead_code)]
-    pub fn align_constant_delta(&self) -> TimeDelta {
+    pub fn align_constant_delta_merge_sort(
+        ref_spans: &[TimeSpan],
+        in_spans: &[TimeSpan],
+        score_fn: impl Fn(TimeDelta, TimeDelta) -> f64 + Copy,
+    ) -> (TimeDelta, Rating) {
         #[derive(PartialEq, Eq, Clone)]
         struct DeltaCorrect {
             rating: RatingDeltaDelta,
@@ -134,13 +193,13 @@ impl Aligner {
 
         let mut delta_corrects: Vec<OrderedDeltaCorrect> = Vec::new();
 
-        for incorrect_ts in &self.list {
+        for incorrect_ts in in_spans {
             let mut rise_ordered_delta_corrects: OrderedDeltaCorrect = OrderedDeltaCorrect::new();
             let mut up_ordered_delta_corrects: OrderedDeltaCorrect = OrderedDeltaCorrect::new();
             let mut fall_ordered_delta_corrects: OrderedDeltaCorrect = OrderedDeltaCorrect::new();
             let mut down_ordered_delta_corrects: OrderedDeltaCorrect = OrderedDeltaCorrect::new();
 
-            for reference_ts in &self.reference {
+            for reference_ts in ref_spans {
                 let rise_time;
                 let up_time;
                 let fall_time;
@@ -159,7 +218,7 @@ impl Aligner {
                 }
 
                 let rating_delta_delta: RatingDeltaDelta =
-                    RatingDelta::compute_rating_delta(incorrect_ts.len(), reference_ts.len());
+                    RatingDelta::compute_rating_delta(incorrect_ts.len(), reference_ts.len(), score_fn);
 
                 rise_ordered_delta_corrects
                     .push(DeltaCorrect::new(rating_delta_delta, rise_time - incorrect_ts.start()));
@@ -272,24 +331,24 @@ impl Aligner {
         }
 
         // compute maximum rating
-        let mut delta: i64 = 0;
-        let mut rating: i64 = 0;
-        let mut maximum: (i64, TimeDelta) = (0, first_delta_correct.time);
+        let mut delta: RatingDelta = RatingDelta::zero();
+        let mut rating: Rating = Rating::zero();
+        let mut maximum: (Rating, TimeDelta) = (Rating::zero(), first_delta_correct.time);
         for (delta_correct, next_delta_correct) in sorted_delta_corrects_iter
             .clone()
             .zip(sorted_delta_corrects_iter.skip(1))
         {
             //println!("rating: {}", rating);
-            delta += delta_correct.rating;
-            rating += delta * (next_delta_correct.time - delta_correct.time).as_i64();
+            delta = delta + delta_correct.rating;
+            rating = Rating::add_mul(rating, delta, next_delta_correct.time - delta_correct.time);
             if rating > maximum.0 {
                 maximum = (rating, next_delta_correct.time);
             }
         }
 
-        assert!(rating == 0);
+        assert!(Rating::is_zero(rating));
 
-        return maximum.1;
+        return (maximum.1, maximum.0);
     }
 
     #[cfg(feature = "statistics")]
@@ -300,280 +359,150 @@ impl Aligner {
     }
 
     pub fn align_with_splits(
-        &self,
-        mut progress_handler_opt: Option<Box<dyn ProgressHandler>>,
-        nopsplit_bonus_normalized: f64,
+        ref_spans: &[TimeSpan],
+        in_spans: &[TimeSpan],
+        split_penalty: RatingDelta,
         speed_optimization_opt: Option<f64>,
-    ) -> Vec<TimeDelta> {
+        score_fn: impl Fn(TimeDelta, TimeDelta) -> f64 + Copy,
+        mut progress_handler: impl ProgressHandler,
+    ) -> (Vec<TimeDelta>, Rating) {
         // For each segment the full rating can only be 1. So the maximum rating
-        // without the nosplit bonus is `min(list.len(), reference.len())`. So to get
+        // without the split penalty is `min(list.len(), reference.len())`. So to get
         // from the normalized rating `[0, 1]` to a unnormalized rating (where only
         // values between `[0, max_rating]` are interesting) we multiply by
         // `min(list.len(), reference.len())`.
 
-        if let Some(progress_handler) = progress_handler_opt.as_mut() {
-            progress_handler.init(self.list.len() as i64);
-        }
+        assert!(in_spans.len() > 0);
+        assert!(ref_spans.len() > 0);
 
-        let nopsplit_bonus_unnormalized: RatingDelta = ((min(self.list.len(), self.reference.len()) as f64
-            * nopsplit_bonus_normalized)
-            * RATING_PRECISION as f64) as RatingDelta;
+        progress_handler.init(in_spans.len() as i64);
 
-        let mut last_rating_buffer: Option<RatingBuffer> =
-            Some(zero_rating_iterator(self.get_start(), self.get_end()).save());
+        let speed_optimization = speed_optimization_opt.unwrap_or(0.0);
 
-        assert!(self.list.len() > 0);
+        let (min_offset, max_offset) = Self::get_offsets_bounds(ref_spans, in_spans);
+        let (min_offset, max_offset) = (min_offset - TimeDelta::one(), max_offset + TimeDelta::one());
 
-        /*: impl Iterator<Item=Option<TimeDelta>>*/
-        let nosplit_delta_iter = self
-            .list
-            .iter()
-            .zip(self.list.iter().skip(1))
-            .map(|(incorrect_timespan, next_timespan)| Some(next_timespan.start - incorrect_timespan.start))
-            .chain(once(None));
+        // these buffers save the offsets of a subtitle line dependent on the offset of the next line,
+        //  -> this allows to compute the final corrected line offsets
+        let mut offset_buffers: Vec<OffsetBuffer> = Vec::new();
 
-        // these buffers save the start position of a line dependent on the position of the next line,
-        //  -> this allows to compute the final corrected line positions
-        let mut position_buffers: Vec<PositionBuffer> = Vec::new();
+        let mut culmulative_rating_buffer: RatingBuffer =
+            Self::single_span_ratings(ref_spans, in_spans[0], score_fn, min_offset, max_offset).save();
 
-        for (line_nr, (&incorrect_span, nosplit_delta_opt)) in self.list.iter().zip(nosplit_delta_iter).enumerate() {
+        progress_handler.inc();
+
+        for (line_nr, (&last_incorrect_span, &incorrect_span)) in
+            in_spans.iter().zip(in_spans.iter().skip(1)).enumerate()
+        {
+            assert!(last_incorrect_span.len() > TimeDelta::zero()); // otherwise shift_simple/extend_to creates a zero-length segment
             assert!(incorrect_span.len() > TimeDelta::zero()); // otherwise shift_simple/extend_to creates a zero-length segment
 
-            let pline_tag = format!("line:{}", line_nr);
-            let nline_tag = format!("line:-{}", self.list.len() - 1 - line_nr);
-            let _line_tags: Vec<&str> = vec![pline_tag.as_str(), nline_tag.as_str()];
+            let span_distance = incorrect_span.start - last_incorrect_span.end;
 
-            let single_span_ratings;
-            let _single_span_ratings = self.single_span_ratings(incorrect_span.len());
+            assert!(span_distance >= TimeDelta::zero()); // otherwise shift_simple/extend_to creates a zero-length segment
+            assert!(culmulative_rating_buffer.first_end_point().unwrap() - min_offset > span_distance);
 
-            #[cfg(not(feature = "statistics"))]
-            {
-                single_span_ratings = _single_span_ratings;
-            }
+            let best_split_offsets = culmulative_rating_buffer
+                .iter()
+                .add_rating(-split_penalty)
+                .shift_simple(-span_distance)
+                //.clamp_end(self.get_max_offset())
+                .extend_to(max_offset)
+                .annotate_with_segment_start_points()
+                .annotate_with_offset_info(|offset| offset + span_distance)
+                .left_to_right_maximum()
+                .discard_start_times()
+                .simplify()
+                .discard_start_times();
 
-            #[cfg(feature = "statistics")]
-            {
-                let single_span_ratings_buffer = _single_span_ratings.save();
+            let nosplit_offsets = culmulative_rating_buffer
+                .iter()
+                .annotate_with_segment_start_points()
+                .annotate_with_offset_info(|offset| offset)
+                .discard_start_times();
+            //.simplify()
+            //.discard_start_times();
 
-                self.do_statistics(|s| {
-                    s.save_rating_buffer(
-                        "[1] INDIVIDUAL span ratings for start position",
-                        &_line_tags
-                            .clone()
-                            .into_iter()
-                            .chain(once("individual"))
-                            .collect::<Vec<_>>(),
-                        &single_span_ratings_buffer,
-                    )
-                });
+            let single_span_ratings =
+                Self::single_span_ratings(ref_spans, incorrect_span, score_fn, min_offset, max_offset).save();
 
-                single_span_ratings = single_span_ratings_buffer.into_iter();
-            }
+            let progress_factor = (line_nr + 1) as f64 / in_spans.len() as f64;
+            let epsilon = Rating::convert_from_f64(speed_optimization * 0.05 * (progress_factor * 0.8 + 0.2));
 
-            let added_buffer: RatingBuffer;
-            if let Some(speed_optimization) = speed_optimization_opt {
-                let progress_factor = line_nr as f64 / self.list.len() as f64;
-                let epsilon = (RATING_PRECISION as f64 * speed_optimization * 0.1 * progress_factor) as i64;
-
-                added_buffer = add_rating_iterators(last_rating_buffer.unwrap().into_iter(), single_span_ratings)
+            let combined_maximum_buffer: SeparateDualBuffer =
+                combined_maximum_of_dual_iterators(nosplit_offsets, best_split_offsets)
                     .discard_start_times()
-                    .save_aggressively_simplified(epsilon);
-            } else {
-                added_buffer = add_rating_iterators(last_rating_buffer.unwrap().into_iter(), single_span_ratings)
+                    .add_ratings_from(single_span_ratings.iter())
                     .discard_start_times()
-                    .save();
-                //.save_simplified(); // this seems to not change runtime very much (TODO: test with benchmark)
-            }
+                    .save_separate(epsilon);
 
-            #[cfg(feature = "statistics")]
-            self.do_statistics(|s| {
-                s.save_rating_buffer(
-                    "[2] TOTAL span ratings for start position (last rating + new span rating)",
-                    &_line_tags
-                        .clone()
-                        .into_iter()
-                        .chain(once("individual"))
-                        .collect::<Vec<_>>(),
-                    &buffer,
-                )
-            });
+            culmulative_rating_buffer = combined_maximum_buffer.rating_buffer;
 
-            if let Some(nosplit_delta) = nosplit_delta_opt {
-                assert!(nosplit_delta > TimeDelta::zero()); // otherwise shift_simple/extend_to creates a zero-length segment
+            /*println!(
+                "Last rating buffer length: {}",
+                combined_maximum_buffer.rating_buffer.buffer.len()
+            );*/
 
-                let best_split_positions;
-                let _best_split_positions = added_buffer
-                    .iter()
-                    .shift_simple(incorrect_span.len())
-                    .clamp_end(self.get_end())
-                    .annotate_with_segment_start_times()
-                    .annotate_with_position_info(|segment_start_point| segment_start_point - incorrect_span.len())
-                    .left_to_right_maximum()
-                    .discard_start_times()
-                    .simplify()
-                    .discard_start_times();
+            offset_buffers.push(combined_maximum_buffer.offset_buffer);
 
-                let nosplit_positions;
-                let _nosplit_positions = added_buffer
-                    .iter()
-                    .shift_simple(nosplit_delta)
-                    .clamp_end(self.get_end())
-                    .annotate_with_segment_start_times()
-                    .discard_start_times()
-                    .add_rating(nopsplit_bonus_unnormalized)
-                    .annotate_with_segment_start_times()
-                    .annotate_with_position_info(|segment_start_point| segment_start_point - nosplit_delta)
-                    .discard_start_times();
-                //.simplify()
-                //.discard_start_times();
-
-                let combined_maximum_buffer: SeparateDualBuffer;
-
-                #[cfg(feature = "statistics")]
-                {
-                    let nosplit_positions_buffer = _nosplit_positions.save();
-
-                    self.do_statistics(|s| {
-                        s.save_rating_buffer(
-                            "[3a] NOsplit ratings (positions are FIXED to end)",
-                            &_line_tags
-                                .clone()
-                                .into_iter()
-                                .chain(once("nosplit"))
-                                .collect::<Vec<_>>(),
-                            &nosplit_positions_buffer.iter().only_ratings().save(),
-                        )
-                    });
-
-                    self.do_statistics(|s| {
-                        s.save_position_buffer(
-                            "[3b] NOsplit positions (positions are FIXED to end)",
-                            &_line_tags
-                                .clone()
-                                .into_iter()
-                                .chain(once("nosplit"))
-                                .collect::<Vec<_>>(),
-                            &nosplit_positions_buffer.iter().only_positions().save(),
-                        )
-                    });
-
-                    let best_split_positions_buffer = _best_split_positions.save();
-
-                    self.do_statistics(|s| {
-                        s.save_rating_buffer(
-                            "[4a] split ratings (positions computed by LEFT-TO-RIGHT maxmimum)",
-                            &_line_tags.clone().into_iter().chain(once("split")).collect::<Vec<_>>(),
-                            &best_split_positions_buffer.iter().only_ratings().save(),
-                        )
-                    });
-
-                    self.do_statistics(|s| {
-                        s.save_position_buffer(
-                            "[4b] split positions (positions computed by LEFT-TO-RIGHT maxmimum)",
-                            &_line_tags.clone().into_iter().chain(once("split")).collect::<Vec<_>>(),
-                            &best_split_positions_buffer.iter().only_positions().save(),
-                        )
-                    });
-
-                    nosplit_positions = nosplit_positions_buffer.into_iter();
-                    best_split_positions = best_split_positions_buffer.into_iter();
-                }
-
-                #[cfg(not(feature = "statistics"))]
-                {
-                    nosplit_positions = _nosplit_positions;
-                    best_split_positions = _best_split_positions;
-                }
-
-                combined_maximum_buffer = combined_maximum_of_dual_iterators(nosplit_positions, best_split_positions)
-                    .discard_start_times()
-                    .save_separate();
-
-                #[cfg(feature = "statistics")]
-                self.do_statistics(|s| {
-                    s.save_rating_buffer(
-                        "[5] COMBINED ratings for this span (vertical maximum of split and nosplit)",
-                        &_line_tags
-                            .clone()
-                            .into_iter()
-                            .chain(once("combined"))
-                            .collect::<Vec<_>>(),
-                        &combined_maximum_buffer.rating_buffer,
-                    )
-                });
-
-                /*println!(
-                    "Last rating buffer length: {}",
-                    combined_maximum_buffer.rating_buffer.buffer.len()
-                );*/
-
-                last_rating_buffer = Some(combined_maximum_buffer.rating_buffer);
-
-                position_buffers.push(combined_maximum_buffer.position_buffer);
-            } else {
-                last_rating_buffer = None;
-
-                let best_position = added_buffer
-                    .iter()
-                    .annotate_with_segment_start_times()
-                    .annotate_with_position_info(|segment_start_point| segment_start_point)
-                    .left_to_right_maximum()
-                    .discard_start_times()
-                    .only_positions();
-
-                position_buffers.push(best_position.save());
-            }
-
-            #[cfg(feature = "statistics")]
-            self.do_statistics(|s| {
-                s.save_position_buffer(
-                    "[5] COMBINED positions span (by vertical rating maximum of split and nosplit)",
-                    &_line_tags
-                        .clone()
-                        .into_iter()
-                        .chain(once("combined"))
-                        .collect::<Vec<_>>(),
-                    &position_buffers.last().unwrap(),
-                )
-            });
-
-            if let Some(progress_handler) = progress_handler_opt.as_mut() {
-                progress_handler.inc();
-            }
+            progress_handler.inc();
         }
 
         // ------------------------------------------------------------------------------
-        // Extract the best position for each incorrect span from position buffers
+        // Extract the best offset for each incorrect span from offset buffers
 
-        assert!(self.list.len() == position_buffers.len());
+        assert!(offset_buffers.len() == in_spans.len() - 1);
 
-        let mut next_segment_position = self.get_end() - TimeDelta::one();
+        let (total_rating, mut span_offset) = culmulative_rating_buffer.maximum();
+
         let mut result_deltas = Vec::new();
-        for (incorrect_span, position_buffer) in Iterator::zip(self.list.iter(), position_buffers.iter()).rev() {
-            let best_position = position_buffer.get_at(next_segment_position);
-            result_deltas.push(best_position - incorrect_span.start);
+        result_deltas.push(span_offset);
 
-            next_segment_position = best_position;
+        //let sum: usize = offset_buffers.iter().map(|ob| ob.len()).sum();
+        //println!("{} {}MB", sum, (sum * std::mem::size_of::<crate::segments::OffsetSegment>()) as f64 / (1024 * 1024) as f64);
+
+        for offset_buffer in offset_buffers.into_iter().rev() {
+            span_offset = offset_buffer.get_offset_at(span_offset);
+
+            // Due to ''aggressive optimization'' of the rating curve in each step
+            // the maximum of the nosplit curve might be at the start. Then the
+            // annotated offsets are negative. In that case - to avoid a
+            // out of bounds error - we simply copy the current result delta
+            // to all remaining spans.
+            /*if span_offset < self.get_min_offset() {
+                span_offset = std::cmp::max(span_offset, self.get_start());
+                let error_delta = span_offset - incorrect_span.start;
+                for _ in 0..self.list.len() - result_deltas.len() {
+                    result_deltas.push(error_delta);
+                }
+                break;
+            }*/
+
+            result_deltas.push(span_offset);
         }
 
         // the deltas were inserted back-to-front
         result_deltas.reverse();
 
-        if let Some(progress_handler) = progress_handler_opt.as_mut() {
-            progress_handler.finish();
-        }
+        progress_handler.finish();
 
-        result_deltas
+        (result_deltas, total_rating)
     }
 
     /// Requires "start1 <= start2". Returns the compressed rating vector for
     /// the overlapping ratings of a timespan of length
-    /// "length" on all start position from "start1" to "start2".
+    /// "length" on all start offset from "start1" to "start2".
     ///
     /// This function has O(n) runtime, where n is the number of spans in the
     /// reference list.
 
-    fn single_span_ratings(&self, length: TimeDelta) -> RatingIterator<impl Iterator<Item = RatingSegment>> {
+    fn single_span_ratings(
+        ref_spans: &[TimeSpan],
+        in_span: TimeSpan,
+        score_fn: impl Fn(TimeDelta, TimeDelta) -> f64 + Copy,
+        min_offset: TimeDelta,
+        max_offset: TimeDelta,
+    ) -> RatingIterator<impl Iterator<Item = RatingSegment>> {
         // If we fix one timespan and let an other timespan variable, we get such a
         // curve for the rating:
         //
@@ -595,47 +524,63 @@ impl Aligner {
         // previous total delta to the buffer. This way we get the segments with the
         // same delta very efficently in O(n).
 
-        let mut builder = DifferentialRatingBufferBuilder::new(self.get_start(), self.get_end());
-        let mut timepoints: [Vec<(RatingDelta, TimePoint)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-        for &ref_ts in &self.reference {
-            let changepoints = Self::get_overlapping_rating_changepoints(length, ref_ts);
-            timepoints[0].push(changepoints[0]);
-            timepoints[1].push(changepoints[1]);
-            timepoints[2].push(changepoints[2]);
-            timepoints[3].push(changepoints[3]);
+        let mut builder = DifferentialRatingBufferBuilder::new(min_offset, max_offset);
+        let len = ref_spans.len();
+        let mut timepoints: Vec<Option<(TimeDelta, RatingDeltaDelta)>> = vec![None; 4 * len];
+        for (i, &ref_span) in ref_spans.iter().enumerate() {
+            let rise_delta = RatingDelta::compute_rating_delta(ref_span.len(), in_span.len(), score_fn);
+
+            timepoints[0 * len + i] = Some((ref_span.start() - in_span.end(), rise_delta));
+            timepoints[1 * len + i] = Some((ref_span.end() - in_span.end(), -rise_delta));
+            timepoints[2 * len + i] = Some((ref_span.start() - in_span.start(), -rise_delta));
+            timepoints[3 * len + i] = Some((ref_span.end() - in_span.start(), rise_delta));
         }
 
-        // this is a vector of 4 iterators, each iterating over the contents of
-        // "timepoints[0]" to "timepoints[3]"
-        let mut iterators: ArrayVec<[_; 4]> = timepoints
-            .into_iter()
-            .cloned()
-            .map(|v| v.into_iter().peekable())
-            .collect();
-        loop {
-            // unpack the first value of each iterator
-            let next_timepoints: ArrayVec<[(usize, (Rating, TimePoint)); 4]> = iterators
-                .iter_mut()
-                .enumerate()
-                .map(|(i, iter)| iter.peek().map(|&v| (i, v)))
-                .filter_map(|opt| opt)
-                .collect();
+        let timepoints: Vec<(TimeDelta, RatingDeltaDelta)> = timepoints.into_iter().map(|x| x.unwrap()).collect();
 
-            // take the first next timepoint
-            let next_changepoint_opt = next_timepoints.into_iter().min_by_key::<TimePoint, _>(|a| (a.1).1);
+        // standard merge sort
+        fn merge(
+            a: &[(TimeDelta, RatingDeltaDelta)],
+            b: &[(TimeDelta, RatingDeltaDelta)],
+        ) -> Vec<(TimeDelta, RatingDeltaDelta)> {
+            let mut ai = 0;
+            let mut bi = 0;
+            let mut result = Vec::with_capacity(a.len() + b.len());
+            loop {
+                if ai == a.len() && bi == b.len() {
+                    return result;
+                }
+                if bi == b.len() {
+                    while ai < a.len() {
+                        result.push(a[ai]);
+                        ai = ai + 1;
+                    }
+                    return result;
+                }
+                if ai == a.len() {
+                    while bi < b.len() {
+                        result.push(b[bi]);
+                        bi = bi + 1;
+                    }
+                    return result;
+                }
+                if a[ai].0 <= b[bi].0 {
+                    result.push(a[ai]);
+                    ai = ai + 1;
+                } else {
+                    result.push(b[bi]);
+                    bi = bi + 1;
+                }
+            }
+        }
 
-            // because each original array had the same length, all iterators should end at
-            // the same time
-            let (next_id, (segment_end_delta_delta, segment_end)) = match next_changepoint_opt {
-                Some(next_changepoint) => next_changepoint,
-                None => break,
-            };
+        let x = merge(&timepoints[len * 0..len * 1], &timepoints[len * 1..len * 2]);
+        let y = merge(&timepoints[len * 2..len * 3], &timepoints[len * 3..len * 4]);
 
+        let timepoints = merge(&x, &y);
+
+        for (segment_end, segment_end_delta_delta) in timepoints {
             builder.add_segment(segment_end, segment_end_delta_delta);
-
-            // "next_id" contains the index of the iterator which contains
-            // "next_changepoint" -> pop that from the front so we don't have a endless loop
-            iterators[next_id].next();
         }
 
         // the rating values are continuous, so the first value of a segment is the
@@ -651,52 +596,6 @@ impl Aligner {
 
         builder.build().into_rating_iter()
     }
-
-    /// Returns the timepoints at which the rating delta changes if we move one
-    /// subtitle compared to
-    /// an other.
-    ///
-    /// If we fix one timespan and let an other timespan variable, we get such a
-    /// curve for the rating:
-    ///
-    /// ```text
-    ///
-    ///          / --------- \
-    ///         /             \
-    /// -------                --------------------------
-    /// ```
-    ///
-    /// At first the rating be zero, then rise linearly, then it will be constant
-    /// for a time and then fall to zero again. This function computes these 4
-    /// special timepoints.
-    pub fn get_overlapping_rating_changepoints(
-        length: TimeDelta,
-        constspan: TimeSpan,
-    ) -> [(RatingDeltaDelta, TimePoint); 4] {
-        let start_of_rise = constspan.start() - length;
-        let end_of_rise = constspan.end() - length;
-        let start_of_fall = constspan.start();
-        let end_of_fall = constspan.end();
-
-        let timepoints: [TimePoint; 4] = if end_of_rise <= start_of_fall {
-            [start_of_rise, end_of_rise, start_of_fall, end_of_fall]
-        } else {
-            [start_of_rise, start_of_fall, end_of_rise, end_of_fall]
-        };
-
-        assert!(timepoints[0] <= timepoints[1]);
-        assert!(timepoints[1] <= timepoints[2]);
-        assert!(timepoints[2] <= timepoints[3]);
-
-        let rise_delta = RatingDelta::compute_rating_delta(length, constspan.len());
-
-        [
-            (rise_delta, timepoints[0]),
-            (-rise_delta, timepoints[1]),
-            (-rise_delta, timepoints[2]),
-            (rise_delta, timepoints[3]),
-        ]
-    }
 }
 
 #[cfg(test)]
@@ -707,18 +606,17 @@ mod tests {
     use crate::segments::RatingFullSegment;
     use crate::tests::get_random_prepared_test_time_spans;
 
-    fn get_dummy_aligner() -> Aligner {
+    fn get_dummy_spans() -> Vec<TimeSpan> {
         loop {
-            let reference_ts = get_random_prepared_test_time_spans();
-            let incorrect_ts = get_random_prepared_test_time_spans();
+            let ts = get_random_prepared_test_time_spans();
 
             // this is unlikely
-            if reference_ts.is_empty() || incorrect_ts.is_empty() {
+            if ts.is_empty() {
                 continue;
             }
 
             // new will return None, if both lists are empty -> highly unlikely
-            return Aligner::new(reference_ts, incorrect_ts, None);
+            return ts;
         }
     }
 
@@ -726,24 +624,34 @@ mod tests {
     /// Aligns random timespans to each other and calls alass. General test whether any internal
     /// assertions are invalidated.
     fn run_aligner() {
-        for _ in 0..20 {
-            get_dummy_aligner().align_with_splits(None, 0.1, None);
+        for _ in 0..40 {
+            let (ref_spans, in_spans) = (get_dummy_spans(), get_dummy_spans());
+            Aligner::align_with_splits(
+                &ref_spans,
+                &in_spans,
+                RatingDelta::convert_from_f64(0.001),
+                None,
+                crate::standard_scoring,
+                NoProgressHandler,
+            );
         }
     }
 
     #[test]
     fn test_single_span_ratings() {
         for _ in 0..30 {
-            let alass = get_dummy_aligner();
+            let (ref_spans, in_spans) = (get_dummy_spans(), get_dummy_spans());
+            let (min_offset, max_offset) = Aligner::get_offsets_bounds(&ref_spans, &in_spans);
+            let (min_offset, max_offset) = (min_offset - TimeDelta::one(), max_offset + TimeDelta::one());
 
-            for span in alass.list.clone() {
-                let last: RatingFullSegment = alass
-                    .single_span_ratings(span.len())
-                    .annotate_with_segment_start_times()
-                    .into_iter()
-                    .last()
-                    .unwrap();
-                assert_eq!(last.end_rating(), Rating::zero());
+            for in_span in in_spans {
+                let last: RatingFullSegment =
+                    Aligner::single_span_ratings(&ref_spans, in_span, crate::standard_scoring, min_offset, max_offset)
+                        .annotate_with_segment_start_points()
+                        .into_iter()
+                        .last()
+                        .unwrap();
+                assert!(Rating::is_zero(last.end_rating()));
                 //assert_eq!(dbg!(last.data.delta), RatingDelta::zero());
             }
         }
@@ -774,5 +682,4 @@ mod tests {
             );
         }
     }*/
-
 }

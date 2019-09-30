@@ -1,7 +1,6 @@
-// This file is not really meant as an example. This is the program that creates many statistics from `../test_data/database.json`.
+// This file is not really meant as an example. This program in conjunction with the `../statistics-helpers/*` create the diagrams .
 
 use alass_cli::*;
-use alass_core::Statistics;
 use clap::value_t;
 use clap::{App, Arg};
 use failure::{Backtrace, Context, Fail, ResultExt};
@@ -9,7 +8,7 @@ use rmp_serde as rmps;
 use std::cmp::Ordering;
 use std::cmp::{max, min};
 use std::collections::HashSet;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -17,6 +16,22 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
+
+// Raw data
+//
+// Types of alignment algorithms:
+//   unweighted no-split
+//   no-split
+//   split
+//
+// Reference Types:
+//    video
+//    ref sub
+//
+// Framerate correction
+//    none
+//    3 (1, 23.976 <-> 25)
+//    7 (1, 23.976 <-> 25, 23.976 <-> 24, 24 <-> 25)
 
 use threadpool::ThreadPool;
 
@@ -210,9 +225,37 @@ pub enum AlignMode {
 }
 
 #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+pub enum ScalingCorrectMode {
+    // only scaling value: 1
+    None,
+    // using 1, 23.976/25 and 25/23.976
+    //Simple,
+    // using 1, 23.976/25 and 25/23.976, 24/25 and 25/24, 23.976/24 and 24/23.976
+    Advanced,
+}
+
+impl ScalingCorrectMode {
+    pub fn iter() -> &'static [ScalingCorrectMode] {
+        &[
+            ScalingCorrectMode::None,
+            //ScalingCorrectMode::Simple,
+            ScalingCorrectMode::Advanced,
+        ]
+    }
+}
+
+#[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+pub enum ScoringMode {
+    Standard,
+    Overlap,
+}
+
+#[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
 pub struct AlignConfig {
     pub align_mode: AlignMode,
     pub ms_per_alg_step: i64,
+    pub scaling_correct_mode: ScalingCorrectMode,
+    pub scoring_mode: ScoringMode,
 }
 
 impl AlignConfig {
@@ -226,29 +269,177 @@ impl AlignConfig {
                 },
             },
             ms_per_alg_step: self.ms_per_alg_step,
+            scaling_correct_mode: self.scaling_correct_mode,
+            scoring_mode: self.scoring_mode,
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
-pub struct FixedPointNumber(i64);
-const FIXED_POINT_NUMBER_FACTOR: f64 = 100000000.0;
-
-impl FixedPointNumber {
-    fn from_f64(v: f64) -> FixedPointNumber {
-        FixedPointNumber((v * FIXED_POINT_NUMBER_FACTOR) as i64)
+    fn with_optimization(&self, new_optimization: Option<FixedPointNumber>) -> AlignConfig {
+        AlignConfig {
+            align_mode: match self.align_mode {
+                AlignMode::NoSplit => AlignMode::NoSplit,
+                AlignMode::Split { split_penalty, .. } => AlignMode::Split {
+                    split_penalty,
+                    optimization: new_optimization,
+                },
+            },
+            ms_per_alg_step: self.ms_per_alg_step,
+            scaling_correct_mode: self.scaling_correct_mode,
+            scoring_mode: self.scoring_mode,
+        }
     }
 
-    fn to_f64(self) -> f64 {
-        self.0 as f64 / FIXED_POINT_NUMBER_FACTOR
-    }
-
-    fn to_f32(self) -> f32 {
-        self.0 as f32 / FIXED_POINT_NUMBER_FACTOR as f32
-    }
+    /*fn with_scaling_correct_mode(&self, new_scaling_correct_mode: ScalingCorrectMode) -> AlignConfig {
+        AlignConfig {
+            align_mode: self.align_mode,
+            ms_per_alg_step: self.ms_per_alg_step,
+            scaling_correct_mode: new_scaling_correct_mode,
+        }
+    }*/
 }
 
 mod types {
+
+    #[derive(Clone, Copy, Debug, Hash, serde::Serialize, serde::Deserialize)]
+    pub struct Span {
+        pub start_ms: i64,
+        pub end_ms: i64,
+    }
+
+    impl From<&super::database::LineInfo> for Span {
+        fn from(l: &super::database::LineInfo) -> Span {
+            assert!(l.start_ms <= l.end_ms);
+            Span {
+                start_ms: l.start_ms,
+                end_ms: l.end_ms,
+            }
+        }
+    }
+
+    impl From<subparse::timetypes::TimeSpan> for Span {
+        fn from(l: subparse::timetypes::TimeSpan) -> Span {
+            assert!(l.start.msecs() <= l.end.msecs());
+            Span {
+                start_ms: l.start.msecs(),
+                end_ms: l.end.msecs(),
+            }
+        }
+    }
+
+    impl Span {
+        pub fn plus_delta(self, ms: i64) -> Span {
+            Span {
+                start_ms: self.start_ms + ms,
+                end_ms: self.end_ms + ms,
+            }
+        }
+
+        pub fn scaled_by(self, f: f64) -> Span {
+            Span {
+                start_ms: (self.start_ms as f64 * f) as i64,
+                end_ms: (self.end_ms as f64 * f) as i64,
+            }
+        }
+
+        pub fn len_ms(self) -> i64 {
+            assert!(self.start_ms <= self.end_ms);
+            self.end_ms - self.start_ms
+        }
+
+        pub fn to_alass_core_spans(self, ms_per_alg_step: i64) -> alass_core::TimeSpan {
+            alass_core::TimeSpan::new(
+                alass_core::TimePoint::from(self.start_ms / ms_per_alg_step),
+                alass_core::TimePoint::from(self.end_ms / ms_per_alg_step),
+            )
+        }
+
+        pub fn compute_line_distance(self, b: Span) -> i64 {
+            let a = self;
+
+            assert!(a.start_ms <= a.end_ms);
+            assert!(b.start_ms <= b.end_ms);
+
+            let start_diff = b.start_ms - a.start_ms;
+            let end_diff = b.end_ms - a.end_ms;
+
+            if start_diff > 0 && end_diff > 0 {
+                // b is right of a
+                std::cmp::min(start_diff, end_diff)
+            } else if start_diff < 0 && end_diff < 0 {
+                // b is left of a
+                std::cmp::min(-start_diff, -end_diff)
+            } else {
+                // b encloses a, or a enclosed b
+                0
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+    pub enum RefConfig {
+        Subtitle(SubtitleID),
+        Video(MovieID, VADConfig),
+    }
+
+    impl RefConfig {
+        pub fn iter_from<'a>(
+            movie_id: MovieID,
+            vad_spans: &'a [Span],
+            vad_conf: VADConfig,
+            ref_sub_id: SubtitleID,
+            ref_spans: &'a [Span],
+        ) -> impl Iterator<Item = (RefConfig, &'a [Span])> {
+            vec![
+                (RefConfig::Video(movie_id, vad_conf), vad_spans),
+                (RefConfig::Subtitle(ref_sub_id), ref_spans),
+            ]
+            .into_iter()
+        }
+
+        pub fn as_ref_type(&self) -> super::statistics::SyncReferenceType {
+            match self {
+                RefConfig::Subtitle(_) => super::statistics::SyncReferenceType::Subtitle,
+                RefConfig::Video(_, _) => super::statistics::SyncReferenceType::Video,
+            }
+        }
+    }
+
+    #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+    pub struct VADConfig {
+        pub min_span_length_ms: i64,
+    }
+
+    impl VADConfig {
+        pub fn applied_to(&self, spans: &[Span]) -> Vec<Span> {
+            spans
+                .iter()
+                .cloned()
+                .filter(|span| span.end_ms - span.start_ms >= self.min_span_length_ms)
+                .collect()
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+    pub struct FixedPointNumber(i64);
+    const FIXED_POINT_NUMBER_FACTOR: f64 = 100000000.0;
+
+    impl FixedPointNumber {
+        pub fn from_f64(v: f64) -> FixedPointNumber {
+            FixedPointNumber((v * FIXED_POINT_NUMBER_FACTOR) as i64)
+        }
+
+        pub fn to_f64(self) -> f64 {
+            self.0 as f64 / FIXED_POINT_NUMBER_FACTOR
+        }
+
+        pub fn to_f32(self) -> f32 {
+            self.0 as f32 / FIXED_POINT_NUMBER_FACTOR as f32
+        }
+
+        pub fn one() -> FixedPointNumber {
+            FixedPointNumber(FIXED_POINT_NUMBER_FACTOR as i64)
+        }
+    }
 
     pub type MovieID = String;
     pub type SubtitleID = String;
@@ -262,11 +453,6 @@ use types::*;
 // TODO: how long does synchronization take
 // TODO: how far off are synchronizations?
 // TODO: how far off are synchronizations concerning when optimizing for speed, split penalty, ...
-
-#[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
-pub struct VADConfig {
-    min_span_length_ms: i64,
-}
 
 #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
 pub struct LineMatchingConfig {
@@ -318,74 +504,6 @@ pub fn format_time(ms: i64) -> String {
     (result, end - start)
 }*/
 
-#[derive(Clone, Copy, Debug, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Span {
-    start_ms: i64,
-    end_ms: i64,
-}
-
-impl From<&database::LineInfo> for Span {
-    fn from(l: &database::LineInfo) -> Span {
-        assert!(l.start_ms <= l.end_ms);
-        Span {
-            start_ms: l.start_ms,
-            end_ms: l.end_ms,
-        }
-    }
-}
-
-impl From<subparse::timetypes::TimeSpan> for Span {
-    fn from(l: subparse::timetypes::TimeSpan) -> Span {
-        assert!(l.start.msecs() <= l.end.msecs());
-        Span {
-            start_ms: l.start.msecs(),
-            end_ms: l.end.msecs(),
-        }
-    }
-}
-
-impl Span {
-    fn plus_delta(self, ms: i64) -> Span {
-        Span {
-            start_ms: self.start_ms + ms,
-            end_ms: self.end_ms + ms,
-        }
-    }
-
-    fn len_ms(self) -> i64 {
-        assert!(self.start_ms <= self.end_ms);
-        self.end_ms - self.start_ms
-    }
-
-    fn to_alass_core_spans(self, ms_per_alg_step: i64) -> alass_core::TimeSpan {
-        alass_core::TimeSpan::new(
-            alass_core::TimePoint::from(self.start_ms / ms_per_alg_step),
-            alass_core::TimePoint::from(self.end_ms / ms_per_alg_step),
-        )
-    }
-
-    fn compute_line_distance(self, b: Span) -> i64 {
-        let a = self;
-
-        assert!(a.start_ms <= a.end_ms);
-        assert!(b.start_ms <= b.end_ms);
-
-        let start_diff = b.start_ms - a.start_ms;
-        let end_diff = b.end_ms - a.end_ms;
-
-        if start_diff > 0 && end_diff > 0 {
-            // b is right of a
-            min(start_diff, end_diff)
-        } else if start_diff < 0 && end_diff < 0 {
-            // b is left of a
-            min(-start_diff, -end_diff)
-        } else {
-            // b encloses a, or a enclosed b
-            0
-        }
-    }
-}
-
 fn enough_lines(sub: &[Span], idxs: impl Iterator<Item = usize>, config: &SyncClassificationConfig) -> bool {
     if sub.len() == 0 {
         return true;
@@ -403,7 +521,7 @@ fn enough_lines(sub: &[Span], idxs: impl Iterator<Item = usize>, config: &SyncCl
     let mut line_in_segment: Vec<bool> = vec![false; config.required_segments_for_sync_classification];
 
     let get_segment_for_ms = |ms: i64| {
-        ((ms - start_ms) * config.required_segments_for_sync_classification as i64 / (end_ms - start_ms)) as usize
+        ((ms - start_ms) * config.required_segments_for_sync_classification as i64 / (end_ms - start_ms + 1)) as usize
     };
 
     for idx in idxs {
@@ -412,7 +530,7 @@ fn enough_lines(sub: &[Span], idxs: impl Iterator<Item = usize>, config: &SyncCl
         assert!(line.start_ms <= line.end_ms);
 
         let start_segment = get_segment_for_ms(line.start_ms);
-        let end_segment = get_segment_for_ms(line.start_ms);
+        let end_segment = get_segment_for_ms(line.end_ms);
 
         for segment_idx in start_segment..=end_segment {
             line_in_segment[segment_idx] = true;
@@ -703,11 +821,12 @@ fn get_line_pairs(a: &[database::LineInfo], b: &[database::LineInfo], config: &L
 
 #[derive(Clone, Debug)]
 struct RunConfig {
-    alg_ms_per_step: i64,
     statistics_folder_path_opt: Option<PathBuf>,
     statistics_required_tags: Vec<String>,
 
     split_penalties: Vec<f64>,
+    optimization_values: Vec<f64>,
+    min_span_lengths: Vec<i64>,
 
     align_config: AlignConfig,
     line_match_config: LineMatchingConfig,
@@ -735,6 +854,7 @@ impl fmt::Display for TopLevelErrorKind {
 
 // threaded statistics and cache type
 type TStatistics = Arc<Mutex<statistics::Root>>;
+type TTransStatistics = Arc<Mutex<statistics::TransientRoot>>;
 type TCache = Arc<Mutex<cache::Root>>;
 type TSubtitle = Arc<database::Subtitle>;
 type TMovie = Arc<database::Movie>;
@@ -743,7 +863,7 @@ type TProgressInfo = Arc<ProgressContext>;
 fn perform_vad(movie: &database::Movie, cache: TCache) -> Result<Vec<Span>, TopLevelError> {
     let vad_spans: Vec<Span>;
 
-    let vad_spans_opt: Option<Vec<Span>> = { cache.lock().unwrap().vad_spans.get(&movie.path).cloned() };
+    let vad_spans_opt: Option<Vec<Span>> = { cache.lock().unwrap().vad_spans.get(&movie.id).cloned() };
 
     match vad_spans_opt {
         Some(v) => {
@@ -776,7 +896,7 @@ fn perform_vad(movie: &database::Movie, cache: TCache) -> Result<Vec<Span>, TopL
                     .lock()
                     .unwrap()
                     .vad_spans
-                    .insert(movie.path.clone(), vad_spans.clone());
+                    .insert(movie.id.clone(), vad_spans.clone());
             }
         }
     }
@@ -823,24 +943,16 @@ fn generate_line_pair_data(
 fn align(
     ref_spans: impl Iterator<Item = Span>,
     in_spans: impl Iterator<Item = Span>,
+    scaling_factor: FixedPointNumber,
     config: &AlignConfig,
 ) -> Vec<i64> {
-    let statistics_module_opt: Option<Statistics> = None;
-    /*if let Some(statistics_folder_path) = config.statistics_folder_path_opt.clone() {
-        statistics_module_opt = Some(Statistics::new(
-            statistics_folder_path,
-            config.statistics_required_tags.clone(),
-        ));
-    } else {
-        statistics_module_opt = None;
-    }*/
-
     let ref_alg_spans: Vec<alass_core::TimeSpan> = ref_spans
         .map(|span| span.to_alass_core_spans(config.ms_per_alg_step))
         .collect();
 
     let in_alg_spans: Vec<alass_core::TimeSpan> = in_spans
         .map(|span| span.to_alass_core_spans(config.ms_per_alg_step))
+        .map(|span| span.scaled(scaling_factor.to_f64()))
         .collect();
 
     let alg_deltas;
@@ -848,13 +960,13 @@ fn align(
         AlignMode::NoSplit => {
             let num_inc_timespancs = in_alg_spans.len();
 
-            let alg_delta = alass_core::align_nosplit(
-                in_alg_spans,
-                ref_alg_spans,
-                None,
-                //Some(Box::new(ProgressInfo::new(1, Some(align_start_msg)))),
-                statistics_module_opt,
+            let (alg_delta, _score) = alass_core::align_nosplit(
+                &ref_alg_spans,
+                &in_alg_spans,
+                get_scoring_fn(config.scoring_mode),
+                alass_core::NoProgressHandler,
             );
+            //println!("align score {}", score);
 
             alg_deltas = vec![alg_delta; num_inc_timespancs];
         }
@@ -863,14 +975,14 @@ fn align(
             optimization,
         } => {
             alg_deltas = alass_core::align(
-                in_alg_spans,
-                ref_alg_spans,
+                &ref_alg_spans,
+                &in_alg_spans,
                 split_penalty.to_f64(),
                 optimization.map(FixedPointNumber::to_f64),
-                None,
-                //Some(Box::new(ProgressInfo::new(1, Some(align_start_msg)))),
-                statistics_module_opt,
-            );
+                get_scoring_fn(config.scoring_mode),
+                alass_core::NoProgressHandler,
+            )
+            .0;
         }
     }
 
@@ -880,71 +992,172 @@ fn align(
         .collect()
 }
 
-fn compute_sub_sync_deltas(
-    ref_sub_id: &SubtitleID,
+struct CorrectionInfo {
+    scaling_factor: FixedPointNumber,
+    deltas: Vec<i64>,
+}
+
+impl CorrectionInfo {
+    fn apply_to(&self, in_spans: &[Span]) -> Vec<Span> {
+        assert!(in_spans.len() == self.deltas.len());
+
+        in_spans
+            .iter()
+            .cloned()
+            .map(|span| span.scaled_by(self.scaling_factor.to_f64()))
+            .zip(self.deltas.iter().cloned())
+            .map(|(span, delta)| span.plus_delta(delta))
+            .collect()
+    }
+
+    fn count_splits(&self) -> usize {
+        let mut r = 0;
+        for (d1, d2) in self.deltas.iter().zip(self.deltas.iter().skip(1)) {
+            if d1 != d2 {
+                r = r + 1;
+            }
+        }
+
+        r
+    }
+}
+
+fn assert_nosplit_deltas(deltas: &[i64]) -> i64 {
+    assert!(!deltas.is_empty());
+    let delta = deltas[0];
+    for &delta2 in deltas {
+        assert_eq!(delta, delta2);
+    }
+
+    delta
+}
+
+fn get_scoring_fn(scoring_mode: ScoringMode) -> impl Fn(alass_core::TimeDelta, alass_core::TimeDelta) -> f64 + Copy {
+    match scoring_mode {
+        ScoringMode::Standard => alass_core::standard_scoring,
+        ScoringMode::Overlap => alass_core::overlap_scoring,
+    }
+}
+
+fn compute_score(
+    ref_spans: &[Span],
+    in_spans: &[Span],
+    ms_per_alg_step: i64,
+    offset: i64,
+    scaling_factor: FixedPointNumber,
+    scoring_mode: ScoringMode,
+) -> f64 {
+    alass_core::get_nosplit_score(
+        ref_spans
+            .iter()
+            .cloned()
+            .map(|span| span.to_alass_core_spans(ms_per_alg_step)),
+        in_spans
+            .iter()
+            .cloned()
+            .map(|span| span.to_alass_core_spans(ms_per_alg_step))
+            .map(|span| span.scaled(scaling_factor.to_f64()))
+            .map(|span| span + alass_core::TimeDelta::from_i64(offset / ms_per_alg_step)),
+        get_scoring_fn(scoring_mode),
+    )
+}
+
+fn guess_scaling_factor(
+    ref_conf: RefConfig,
     ref_spans: &[Span],
     in_sub_id: &SubtitleID,
     in_spans: &[Span],
     cache: TCache,
-    conf: &AlignConfig,
-) -> Vec<i64> {
-    let cached_deltas_opt: Option<Vec<i64>> = {
-        cache
-            .lock()
-            .unwrap()
-            .sub_sync_deltas
-            .get(&(ref_sub_id.clone(), in_sub_id.clone(), conf.align_mode))
-            .cloned()
+    ms_per_alg_step: i64,
+    use_cache: bool,
+) -> FixedPointNumber {
+    let new_align_conf = AlignConfig {
+        ms_per_alg_step,
+        align_mode: AlignMode::NoSplit,
+        scaling_correct_mode: ScalingCorrectMode::None,
+        scoring_mode: ScoringMode::Overlap,
     };
 
-    let deltas;
-    match cached_deltas_opt {
-        Some(v) => {
-            deltas = v;
-        }
-        None => {
-            deltas = align(ref_spans.iter().cloned(), in_spans.iter().cloned(), conf);
+    let ratios = [
+        23.976 / 24.,
+        23.976 / 25.,
+        24. / 23.976,
+        24. / 25.,
+        25. / 23.976,
+        25. / 24.,
+    ];
+    let corrections = compute_sync_deltas_fixed_scaling_factor(
+        ref_conf.clone(),
+        ref_spans,
+        in_sub_id,
+        in_spans,
+        cache.clone(),
+        FixedPointNumber::one(),
+        &new_align_conf,
+        use_cache,
+    );
+    let delta = assert_nosplit_deltas(&corrections.deltas);
+    let mut opt_ratio = FixedPointNumber::one();
+    let mut opt_score = compute_score(
+        ref_spans,
+        in_spans,
+        ms_per_alg_step,
+        delta,
+        FixedPointNumber::one(),
+        new_align_conf.scoring_mode,
+    );
+    for ratio in &ratios {
+        let scaling_factor = FixedPointNumber::from_f64(*ratio);
+        let corrections = compute_sync_deltas_fixed_scaling_factor(
+            ref_conf.clone(),
+            ref_spans,
+            in_sub_id,
+            in_spans,
+            cache.clone(),
+            scaling_factor,
+            &new_align_conf,
+            use_cache,
+        );
+        let delta = assert_nosplit_deltas(&corrections.deltas);
 
-            {
-                cache
-                    .lock()
-                    .unwrap()
-                    .sub_sync_deltas
-                    .insert((ref_sub_id.clone(), in_sub_id.clone(), conf.align_mode), deltas.clone());
-            }
+        let score = compute_score(
+            ref_spans,
+            in_spans,
+            ms_per_alg_step,
+            delta,
+            scaling_factor,
+            new_align_conf.scoring_mode,
+        );
+        if score > opt_score {
+            opt_score = score;
+            opt_ratio = scaling_factor;
         }
     }
 
-    deltas
+    opt_ratio
 }
 
-fn compute_number_of_splits(deltas: &[i64]) -> usize {
-    let mut r = 0;
-    for (d1, d2) in deltas.iter().zip(deltas.iter().skip(1)) {
-        if d1 != d2 {
-            r = r + 1;
-        }
-    }
-
-    r
-}
-
-fn compute_video_sync_deltas(
-    movie_id: &MovieID,
-    vad_spans: &[Span],
+fn compute_sync_deltas_fixed_scaling_factor(
+    ref_config: RefConfig,
+    ref_spans: &[Span],
     in_sub_id: &SubtitleID,
-    in_sub_spans: &[Span],
+    in_spans: &[Span],
     cache: TCache,
-    vad_conf: &VADConfig,
-    align_conf: &AlignConfig,
-) -> Vec<i64> {
+    scaling_factor: FixedPointNumber,
+    conf: &AlignConfig,
+    use_cache: bool,
+) -> CorrectionInfo {
     let cached_deltas_opt: Option<Vec<i64>> = {
-        cache
-            .lock()
-            .unwrap()
-            .video_sync_deltas
-            .get(&(movie_id.clone(), in_sub_id.clone(), align_conf.align_mode, *vad_conf))
-            .cloned()
+        if use_cache {
+            cache
+                .lock()
+                .unwrap()
+                .sync_deltas
+                .get(&(ref_config.clone(), in_sub_id.clone(), scaling_factor, conf.align_mode))
+                .cloned()
+        } else {
+            None
+        }
     };
 
     let deltas;
@@ -953,42 +1166,105 @@ fn compute_video_sync_deltas(
             deltas = v;
         }
         None => {
-            deltas = align(vad_spans.iter().cloned(), in_sub_spans.iter().cloned(), align_conf);
+            deltas = align(
+                ref_spans.iter().cloned(),
+                in_spans.iter().cloned(),
+                scaling_factor,
+                conf,
+            );
 
             {
-                cache.lock().unwrap().video_sync_deltas.insert(
-                    (movie_id.clone(), in_sub_id.clone(), align_conf.align_mode, *vad_conf),
+                cache.lock().unwrap().sync_deltas.insert(
+                    (ref_config, in_sub_id.clone(), scaling_factor, conf.align_mode),
                     deltas.clone(),
                 );
             }
         }
     }
 
-    deltas
+    CorrectionInfo { deltas, scaling_factor }
+}
+
+fn compute_sync_deltas(
+    ref_config: RefConfig,
+    ref_spans: &[Span],
+    in_sub_id: &SubtitleID,
+    in_spans: &[Span],
+    cache: TCache,
+    conf: &AlignConfig,
+    use_cache: bool,
+) -> CorrectionInfo {
+    let scaling_factor: FixedPointNumber; // = FixedPointNumber::one();
+
+    match conf.scaling_correct_mode {
+        ScalingCorrectMode::None => scaling_factor = FixedPointNumber::one(),
+        ScalingCorrectMode::Advanced => {
+            scaling_factor = guess_scaling_factor(
+                ref_config.clone(),
+                ref_spans,
+                in_sub_id,
+                in_spans,
+                cache.clone(),
+                conf.ms_per_alg_step,
+                use_cache,
+            )
+        }
+    }
+
+    let cached_deltas_opt: Option<Vec<i64>> = {
+        if use_cache {
+            cache
+                .lock()
+                .unwrap()
+                .sync_deltas
+                .get(&(ref_config.clone(), in_sub_id.clone(), scaling_factor, conf.align_mode))
+                .cloned()
+        } else {
+            None
+        }
+    };
+
+    let deltas;
+    match cached_deltas_opt {
+        Some(v) => {
+            deltas = v;
+        }
+        None => {
+            deltas = align(
+                ref_spans.iter().cloned(),
+                in_spans.iter().cloned(),
+                scaling_factor,
+                conf,
+            );
+
+            {
+                cache.lock().unwrap().sync_deltas.insert(
+                    (ref_config, in_sub_id.clone(), scaling_factor, conf.align_mode),
+                    deltas.clone(),
+                );
+            }
+        }
+    }
+
+    CorrectionInfo { deltas, scaling_factor }
 }
 
 fn update_statistics_with_alignment(
-    ref_spans: &[Span],
+    ref_sub_spans: &[Span],
     in_spans: &[Span],
-    deltas: &[i64],
+    corrections: &CorrectionInfo,
     line_pairs: &[LinePair],
     statistics: TStatistics,
     sync_ref_type: statistics::SyncReferenceType,
     update_histogram: bool,
     config: &RunConfig,
 ) {
-    assert!(in_spans.len() == deltas.len());
-
-    let out_video_spans: Vec<Span> = in_spans
-        .iter()
-        .zip(deltas.iter())
-        .map(|(&in_span, &delta)| in_span.plus_delta(delta))
-        .collect();
+    let out_video_spans: Vec<Span> = corrections.apply_to(in_spans);
 
     // raw_sync_classification == SyncClassification::Unsynced
     if update_histogram {
         update_distance_histogram(
-            ref_spans,
+            ref_sub_spans,
             &out_video_spans,
             line_pairs,
             statistics.clone(),
@@ -997,7 +1273,7 @@ fn update_statistics_with_alignment(
     }
 
     let video_sync_classification = get_sync_classification(
-        &ref_spans,
+        &ref_sub_spans,
         &out_video_spans,
         &line_pairs,
         &config.sync_classification_config,
@@ -1020,17 +1296,6 @@ fn get_offsets(ref_spans: &[Span], in_spans: &[Span], line_pairs: &[LinePair]) -
     }
 
     offsets
-}
-
-fn apply_deltas(in_spans: &[Span], deltas: &[i64]) -> Vec<Span> {
-    assert!(in_spans.len() == deltas.len());
-
-    in_spans
-        .iter()
-        .cloned()
-        .zip(deltas.iter().cloned())
-        .map(|(span, delta)| span.plus_delta(delta))
-        .collect()
 }
 
 fn update_distance_histogram(
@@ -1142,7 +1407,38 @@ fn iterate_movie_subs_with_ref_sub(
         }
     }
 
-    result.into_iter()
+    //use rand::seq::SliceRandom;
+    //use rand::thread_rng;
+    //result.shuffle(&mut thread_rng());
+    result.into_iter().enumerate().map(|(i, data)| {
+        let progress;
+        if let ProgressContext::SubtitleForMovie(movie_prog, sub_prog) = &*data.3 {
+            let mut sub_prog = sub_prog.clone();
+            sub_prog.total_sub_nr = i;
+            progress = Arc::new(ProgressContext::SubtitleForMovie(movie_prog.clone(), sub_prog));
+        } else {
+            progress = data.3;
+        }
+        (data.0, data.1, data.2, progress)
+    })
+}
+
+fn compute_sync_offsets(
+    ref_sub_spans: &[Span],
+    ref_config: RefConfig,
+    ref_spans: &[Span],
+    in_id: &SubtitleID,
+    in_spans: &[Span],
+    line_pairs: &[LinePair],
+    cache: TCache,
+    align_config: &AlignConfig,
+    use_cache: bool,
+) -> Vec<i64> {
+    let correction = compute_sync_deltas(ref_config, ref_spans, in_id, in_spans, cache, align_config, use_cache);
+
+    let out_spans = correction.apply_to(in_spans);
+
+    get_offsets(&ref_sub_spans, &out_spans, &line_pairs)
 }
 
 fn run() -> Result<(), TopLevelError> {
@@ -1156,7 +1452,8 @@ fn run() -> Result<(), TopLevelError> {
                 "User requested stopping of program... Waiting for processes to finish (stop prio {})...",
                 stop_request_prio_ld + 1
             );
-            if stop_request_prio_ld + 1 >= 6 {
+            if stop_request_prio_ld + 1 >= 11 {
+                println!("FORCE EXITING!");
                 std::process::exit(0);
             }
             stop_request_prio.store(stop_request_prio_ld + 1, atomic::Ordering::SeqCst);
@@ -1231,6 +1528,15 @@ fn run() -> Result<(), TopLevelError> {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("ignore-sub")
+                .long("ignore-sub")
+                .alias("ignore-sub-id")
+                .value_name("SUB_ID")
+                .multiple(true)
+                .help("Exclude subtitles by id")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("quiet")
                 .long("quiet")
                 .short("q")
@@ -1267,20 +1573,6 @@ fn run() -> Result<(), TopLevelError> {
                 .requires("cache-dir"),
         )
         .arg(
-            Arg::with_name("clean-cache-video-deltas")
-                .long("clean-cache-video-deltas")
-                .multiple(false)
-                .help("Clean/Overwrite the video alignment delta data in the cache file")
-                .requires("cache-dir"),
-        )
-        .arg(
-            Arg::with_name("clean-cache-sub-deltas")
-                .long("clean-cache-sub-deltas")
-                .multiple(false)
-                .help("Clean/Overwrite the subtitle alignment delta data in the cache file")
-                .requires("cache-dir"),
-        )
-        .arg(
             Arg::with_name("include-synced-subs-in-distance-histogram")
                 .long("include-synced-subs-in-distance-histogram")
                 .multiple(false)
@@ -1294,9 +1586,32 @@ fn run() -> Result<(), TopLevelError> {
                 .multiple(false)
         )
         .arg(
+            Arg::with_name("only-general-statistics")
+                .long("only-general-statistics")
+                .help("Option to only generate statistics for default configuration for each subtitle")
+        )
+        .arg(
+            Arg::with_name("transient-statistics")
+                .long("transient-statistics")
+                .help("Also collect statistics on RAM, runtime performance, ... of the algorithms")
+        )
+        .arg(
+            Arg::with_name("only-transient-statistics")
+                .long("only-transient-statistics")
+                .help("Only collect statistics on RAM, runtime performance, ... of the algorithms")
+        )
+        .arg(
             Arg::with_name("split-penalties")
                 .long("split-penalties")
                 .default_value("0.25,0.5,1,2,3,4,5,6,7,8,9,10,20,30")
+                .help("comma separated float values")
+                .takes_value(true)
+                .multiple(true)
+        )
+        .arg(
+            Arg::with_name("optimization-values")
+                .long("optimization-values")
+                .default_value("0.5,1,2,3,4,5")
                 .help("comma separated float values")
                 .takes_value(true)
                 .multiple(true)
@@ -1312,6 +1627,13 @@ fn run() -> Result<(), TopLevelError> {
             Arg::with_name("default-min-span-length")
                 .long("default-min-span-length")
                 .default_value("300")
+                .takes_value(true)
+                .multiple(false)
+        )
+        .arg(
+            Arg::with_name("min-span-lengths")
+                .long("min-span-lengths")
+                .default_value("100,200,300,400,500,600,800,1000")
                 .takes_value(true)
                 .multiple(false)
         )
@@ -1350,15 +1672,18 @@ fn run() -> Result<(), TopLevelError> {
     let clean_cache_deltas: bool = matches.is_present("clean-cache-deltas");
     let quiet: bool = matches.is_present("quiet");
     let clean_cache_line_pairs: bool = matches.is_present("clean-cache-line-pairs");
-    let clean_cache_video_deltas: bool = matches.is_present("clean-cache-video-deltas") || clean_cache_deltas;
-    let clean_cache_sub_deltas: bool = matches.is_present("clean-cache-sub-deltas") || clean_cache_deltas;
 
     let only_subtitles_opt: Option<HashSet<SubtitleID>> =
         matches.values_of("only-sub").map(|vs| vs.map(String::from).collect());
     let only_movies_opt: Option<HashSet<SubtitleID>> =
         matches.values_of("only-movie").map(|vs| vs.map(String::from).collect());
+    let only_general_statistics: bool = matches.is_present("only-general-statistics");
 
     let distance_histogram_includes_synced_subtitles = matches.is_present("include-synced-subs-in-distance-histogram");
+
+    // statistics on performance, RAM, ...
+    let only_gather_transient_statistics = matches.is_present("only-transient-statistics");
+    let gather_transient_statistics = matches.is_present("transient-statistics") || only_gather_transient_statistics;
 
     let default_split_penalty: f64 = value_t!(matches, "default-split-penalty", f64).unwrap();
     let default_optimization: f64 = value_t!(matches, "default-optimization", f64).unwrap();
@@ -1381,12 +1706,29 @@ fn run() -> Result<(), TopLevelError> {
         .split(',')
         .map(|v| v.trim().parse::<f64>().unwrap())
         .collect();
+    let optimization_values: Vec<f64> = matches
+        .value_of("optimization-values")
+        .unwrap()
+        .split(',')
+        .map(|v| v.trim().parse::<f64>().unwrap())
+        .collect();
+    let min_span_lengths: Vec<i64> = matches
+        .value_of("min-span-lengths")
+        .unwrap()
+        .split(',')
+        .map(|v| v.trim().parse::<i64>().unwrap())
+        .collect();
 
     let num_threads: usize = value_t!(matches, "num-threads", usize).unwrap();
 
     let ignored_movies: HashSet<String> = matches
         .values_of("ignore-movie")
         .map(|v| v.map(|x| x.to_string()).collect::<HashSet<String>>())
+        .unwrap_or_else(|| HashSet::new());
+
+    let ignored_subs: HashSet<String> = matches
+        .values_of("ignore-sub")
+        .map(|v| v.map(|x: &str| x.to_string()).collect::<HashSet<String>>())
         .unwrap_or_else(|| HashSet::new());
 
     let only_every_nth_sub: Option<usize> = value_t!(matches, "only-every-nth-sub", usize).ok();
@@ -1430,12 +1772,8 @@ fn run() -> Result<(), TopLevelError> {
         cache.line_pairs = Default::default();
     }
 
-    if clean_cache_video_deltas {
-        cache.video_sync_deltas = Default::default();
-    }
-
-    if clean_cache_sub_deltas {
-        cache.sub_sync_deltas = Default::default();
+    if clean_cache_deltas {
+        cache.sync_deltas = Default::default();
     }
 
     if clean_cache_vad {
@@ -1461,6 +1799,8 @@ fn run() -> Result<(), TopLevelError> {
             },
         },
         ms_per_alg_step: 1,
+        scaling_correct_mode: ScalingCorrectMode::Advanced,
+        scoring_mode: ScoringMode::Standard,
     };
 
     let default_line_match_conf = LineMatchingConfig {
@@ -1487,11 +1827,12 @@ fn run() -> Result<(), TopLevelError> {
     };
 
     let config: RunConfig = RunConfig {
-        alg_ms_per_step: 10,
         statistics_folder_path_opt: None,
         statistics_required_tags: Vec::new(),
 
         split_penalties,
+        optimization_values,
+        min_span_lengths,
 
         align_config: default_align_conf,
 
@@ -1531,6 +1872,19 @@ fn run() -> Result<(), TopLevelError> {
         }
     }
 
+    for movie in &mut database.movies {
+        let movie_mut = Arc::get_mut(movie).unwrap();
+
+        let mut i = 0;
+        while i != movie_mut.subtitles.len() {
+            if ignored_subs.contains(&movie_mut.subtitles[i].id) {
+                movie_mut.subtitles.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     if let Some(only_every_nth_sub) = only_every_nth_sub {
         let mut nth = 0;
 
@@ -1564,371 +1918,713 @@ fn run() -> Result<(), TopLevelError> {
     let statistics = Arc::new(Mutex::new(statistics));
     let cache = Arc::new(Mutex::new(cache));
 
-    for (movie, progress_info) in iterate_movies(&database) {
-        // Arc clones
-        let stop_request_prio: Arc<_> = stop_request_prio.clone();
-        let cache: Arc<_> = cache.clone();
-        let statistics: Arc<_> = statistics.clone();
-        let tasks_info = tasks_info.clone();
+    if !only_gather_transient_statistics {
+        for (movie, progress_info) in iterate_movies(&database) {
+            // Arc clones
+            let stop_request_prio: Arc<_> = stop_request_prio.clone();
+            let cache: Arc<_> = cache.clone();
+            let statistics: Arc<_> = statistics.clone();
+            let tasks_info = tasks_info.clone();
 
-        thread_pool.execute(move || {
-            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
-                return;
-            }
-
-            let vad_span_opt = tasks_info.run("perform vad", progress_info, || perform_vad(&movie, cache.clone()));
-
-            let vad_spans: Vec<Span>;
-            match vad_span_opt {
-                Ok(v) => vad_spans = v,
-                Err(e) => {
-                    print_ignore_error_for_movie(e, &movie);
+            thread_pool.execute(move || {
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
                     return;
                 }
-            }
 
-            {
-                let mut statistics = statistics.lock().unwrap();
+                let vad_span_opt = tasks_info.run("perform vad", progress_info, || perform_vad(&movie, cache.clone()));
 
-                for &vad_span in &vad_spans {
-                    let len_ms = vad_span.len_ms();
-                    statistics.vad_span_length_histogram.insert(len_ms.abs());
+                let vad_spans: Vec<Span>;
+                match vad_span_opt {
+                    Ok(v) => vad_spans = v,
+                    Err(e) => {
+                        print_ignore_error_for_movie(e, &movie);
+                        return;
+                    }
                 }
-            }
-        });
-    }
 
-    thread_pool.join();
+                {
+                    let mut statistics = statistics.lock().unwrap();
 
-    for (movie, ref_subtitle, in_subtitle, progress_info) in iterate_movie_subs_with_ref_sub(&database) {
-        if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
-            break;
+                    for &vad_span in &vad_spans {
+                        let len_ms = vad_span.len_ms();
+                        statistics.vad_span_length_histogram.insert(len_ms.abs());
+                    }
+                }
+            });
         }
 
-        // cloning data
-        let config: RunConfig = config.clone(); // TODO: use Arc
+        thread_pool.join();
 
-        // cloning Arc<T>
-        let statistics: TStatistics = statistics.clone();
-        let cache: TCache = cache.clone();
-        let stop_request_prio: TStopRequestPrio = stop_request_prio.clone();
-        let in_subtitle: TSubtitle = in_subtitle.clone();
-        let ref_subtitle: TSubtitle = ref_subtitle.clone();
-        let movie: TMovie = movie.clone();
-        let tasks_info = tasks_info.clone();
-
-        thread_pool.execute(move || {
+        for (movie, ref_subtitle, in_subtitle, progress_info) in iterate_movie_subs_with_ref_sub(&database) {
             if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
-                return;
+                break;
             }
 
-            let vad_spans: Vec<Span> = cache
-                .lock()
-                .unwrap()
-                .vad_spans
-                .get(&movie.path)
-                .unwrap()
-                .iter()
-                .filter(|span| span.end_ms - span.start_ms >= config.vad_config.min_span_length_ms)
-                .cloned()
-                .collect();
+            // cloning data
+            let config: RunConfig = config.clone(); // TODO: use Arc
 
-            let line_pairs = tasks_info.run("generate line pairs", progress_info.clone(), || {
-                generate_line_pair_data(&ref_subtitle, &in_subtitle, cache.clone(), &config.line_match_config)
-            });
+            // cloning Arc<T>
+            let statistics: TStatistics = statistics.clone();
+            let cache: TCache = cache.clone();
+            let stop_request_prio: TStopRequestPrio = stop_request_prio.clone();
+            let in_subtitle: TSubtitle = in_subtitle.clone();
+            let ref_subtitle: TSubtitle = ref_subtitle.clone();
+            let movie: TMovie = movie.clone();
+            let tasks_info = tasks_info.clone();
 
-            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
-                return;
-            }
+            thread_pool.execute(move || {
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
+                    return;
+                }
 
-            let ref_spans: Vec<Span> = ref_subtitle.data.iter().map(Span::from).collect();
-            let in_spans: Vec<Span> = in_subtitle.data.iter().map(Span::from).collect();
+                let vad_spans_raw: Vec<Span> = cache.lock().unwrap().get_vad_spans_raw(&movie.id);
+                let vad_spans = config.vad_config.applied_to(&vad_spans_raw);
 
-            let raw_sync_classification =
-                get_sync_classification(&ref_spans, &in_spans, &line_pairs, &config.sync_classification_config);
+                let line_pairs = tasks_info.run("generate line pairs", progress_info.clone(), || {
+                    generate_line_pair_data(&ref_subtitle, &in_subtitle, cache.clone(), &config.line_match_config)
+                });
 
-            {
-                statistics
-                    .lock()
-                    .unwrap()
-                    .general
-                    .get_sync_classification_counter_mut(None)
-                    .insert(raw_sync_classification);
-            }
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                    return;
+                }
 
-            if raw_sync_classification == SyncClassification::Unknown {
-                // we can't use this subtilte
-                let mut statistics = statistics.lock().unwrap();
-                statistics
-                    .general
-                    .get_sync_classification_counter_mut(Some(statistics::SyncReferenceType::Video))
-                    .insert(raw_sync_classification);
+                let ref_sub_spans: Vec<Span> = ref_subtitle.data.iter().map(Span::from).collect();
+                let in_spans: Vec<Span> = in_subtitle.data.iter().map(Span::from).collect();
 
-                statistics
-                    .general
-                    .get_sync_classification_counter_mut(Some(statistics::SyncReferenceType::Subtitle))
-                    .insert(raw_sync_classification);
+                let raw_sync_classification = get_sync_classification(
+                    &ref_sub_spans,
+                    &in_spans,
+                    &line_pairs,
+                    &config.sync_classification_config,
+                );
 
-                return;
-            }
+                {
+                    statistics
+                        .lock()
+                        .unwrap()
+                        .general
+                        .get_sync_classification_counter_mut(None)
+                        .insert(raw_sync_classification);
+                }
 
-            {
-                let mut statistics = statistics.lock().unwrap();
-                // lines are counted on the reference subtitle as well as on the input subtitle
-                (*statistics).general.used_line_candidates =
-                    statistics.general.used_line_candidates + 2 * line_pairs.len();
-                (*statistics).general.total_line_candidates =
-                    statistics.general.total_line_candidates + ref_subtitle.data.len() + in_subtitle.data.len();
-            }
+                if raw_sync_classification == SyncClassification::Unknown {
+                    // we can't use this subtilte
+                    let mut statistics = statistics.lock().unwrap();
+                    statistics
+                        .general
+                        .get_sync_classification_counter_mut(Some(statistics::SyncReferenceType::Video))
+                        .insert(raw_sync_classification);
 
-            if distance_histogram_includes_synced_subtitles || raw_sync_classification == SyncClassification::Unsynced {
-                update_distance_histogram(&ref_spans, &in_spans, &line_pairs, statistics.clone(), None);
-            }
+                    statistics
+                        .general
+                        .get_sync_classification_counter_mut(Some(statistics::SyncReferenceType::Subtitle))
+                        .insert(raw_sync_classification);
 
-            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
-                return;
-            }
+                    return;
+                }
 
-            let video_sync_deltas: Vec<i64> =
-                tasks_info.run("compute video sync deltas", progress_info.clone(), || {
-                    compute_video_sync_deltas(
-                        &movie.id,
+                if guess_scaling_factor(
+                    RefConfig::Subtitle(ref_subtitle.id()),
+                    &ref_sub_spans,
+                    &in_subtitle.id,
+                    &in_spans,
+                    cache.clone(),
+                    config.align_config.ms_per_alg_step,
+                    true,
+                ) != FixedPointNumber::one()
+                {
+                    let mut statistics = statistics.lock().unwrap();
+                    statistics.general.required_framerate_adjustments =
+                        statistics.general.required_framerate_adjustments + 1;
+                }
+
+                {
+                    let mut statistics = statistics.lock().unwrap();
+                    // lines are counted on the reference subtitle as well as on the input subtitle
+                    (*statistics).general.used_line_candidates =
+                        statistics.general.used_line_candidates + 2 * line_pairs.len();
+                    (*statistics).general.total_line_candidates =
+                        statistics.general.total_line_candidates + ref_subtitle.data.len() + in_subtitle.data.len();
+                }
+
+                if distance_histogram_includes_synced_subtitles
+                    || raw_sync_classification == SyncClassification::Unsynced
+                {
+                    update_distance_histogram(&ref_sub_spans, &in_spans, &line_pairs, statistics.clone(), None);
+                }
+
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                    return;
+                }
+
+                for (ref_config, ref_spans) in RefConfig::iter_from(
+                    movie.id.clone(),
+                    &vad_spans,
+                    config.vad_config,
+                    ref_subtitle.id(),
+                    &ref_sub_spans,
+                ) {
+                    if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                        return;
+                    }
+
+                    let ref_type = ref_config.as_ref_type();
+
+                    let corrections: CorrectionInfo = tasks_info.run(
+                        format!("compute {:?} sync deltas", ref_config.as_ref_type()),
+                        progress_info.clone(),
+                        || {
+                            compute_sync_deltas(
+                                ref_config,
+                                ref_spans,
+                                &in_subtitle.id,
+                                &in_spans,
+                                cache.clone(),
+                                &config.align_config,
+                                true,
+                            )
+                        },
+                    );
+
+                    //let synced_spans = corrections.apply_to(&in_spans);
+
+                    /*let video_sync_classification = get_sync_classification(
+                        &ref_spans,
+                        &synced_spans,
+                        &line_pairs,
+                        &config.sync_classification_config,
+                    );*/
+
+                    update_statistics_with_alignment(
+                        &ref_sub_spans,
+                        &in_spans,
+                        &corrections,
+                        &line_pairs,
+                        statistics.clone(),
+                        ref_type,
+                        distance_histogram_includes_synced_subtitles
+                            || raw_sync_classification == SyncClassification::Unsynced,
+                        &config,
+                    );
+                }
+
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                    return;
+                }
+
+                if line_pairs.len() > 0 {
+                    let sub_sync_correction = compute_sync_deltas(
+                        RefConfig::Subtitle(ref_subtitle.id()),
                         &vad_spans,
                         &in_subtitle.id,
                         &in_spans,
                         cache.clone(),
-                        &config.vad_config,
                         &config.align_config,
-                    )
-                });
-
-            let video_sync_spans = apply_deltas(&in_spans, &video_sync_deltas);
-
-            let video_sync_classification = get_sync_classification(
-                &ref_spans,
-                &video_sync_spans,
-                &line_pairs,
-                &config.sync_classification_config,
-            );
-
-            update_statistics_with_alignment(
-                &ref_spans,
-                &in_spans,
-                &video_sync_deltas,
-                &line_pairs,
-                statistics.clone(),
-                statistics::SyncReferenceType::Video,
-                distance_histogram_includes_synced_subtitles || raw_sync_classification == SyncClassification::Unsynced,
-                &config,
-            );
-
-            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
-                return;
-            }
-
-            let sub_sync_deltas: Vec<i64> = tasks_info.run("compute sub sync deltas", progress_info.clone(), || {
-                compute_sub_sync_deltas(
-                    &ref_subtitle.id,
-                    &ref_spans,
-                    &in_subtitle.id,
-                    &in_spans,
-                    cache.clone(),
-                    &config.align_config,
-                )
-            });
-
-            let sub_sync_spans = apply_deltas(&in_spans, &sub_sync_deltas);
-
-            update_statistics_with_alignment(
-                &ref_spans,
-                &in_spans,
-                &sub_sync_deltas,
-                &line_pairs,
-                statistics.clone(),
-                statistics::SyncReferenceType::Subtitle,
-                distance_histogram_includes_synced_subtitles || raw_sync_classification == SyncClassification::Unsynced,
-                &config,
-            );
-
-            let sub_sync_classification = get_sync_classification(
-                &ref_spans,
-                &video_sync_spans,
-                &line_pairs,
-                &config.sync_classification_config,
-            );
-
-            /*if in_subtitle.id() == "1953902379" {
-                //"1955745632" {
-                println!("Found MARKED subtitle");
-                for &(ref_idx, in_idx) in &line_pairs {
-                    let offset = Span::compute_line_distance(
-                        Span::from(&ref_subtitle.data[ref_idx]),
-                        Span::from(&in_subtitle.data[in_idx]),
+                        true,
                     );
-                    if offset > 1200 {
-                        println!("--------");
-                        println!("{}ms", offset);
-                        println!(
-                            "{} and {}",
-                            format_time(ref_subtitle.data[ref_idx].start_ms),
-                            format_time(in_subtitle.data[in_idx].start_ms)
+
+                    let sub_sync_spans = sub_sync_correction.apply_to(&in_spans);
+                    let sub_sync_classification = get_sync_classification(
+                        &ref_sub_spans,
+                        &sub_sync_spans,
+                        &line_pairs,
+                        &config.sync_classification_config,
+                    );
+
+                    let video_sync_correction = compute_sync_deltas(
+                        RefConfig::Video(movie.id.clone(), config.vad_config),
+                        &vad_spans,
+                        &in_subtitle.id,
+                        &in_spans,
+                        cache.clone(),
+                        &config.align_config,
+                        true,
+                    );
+
+                    let video_sync_spans = video_sync_correction.apply_to(&in_spans);
+                    let video_sync_classification = get_sync_classification(
+                        &ref_sub_spans,
+                        &video_sync_spans,
+                        &line_pairs,
+                        &config.sync_classification_config,
+                    );
+
+                    let raw_offsets =
+                        statistics::BoxPlotData::try_from(get_offsets(&ref_sub_spans, &in_spans, &line_pairs)).unwrap();
+                    let video_sync_offsets =
+                        statistics::BoxPlotData::try_from(get_offsets(&ref_sub_spans, &video_sync_spans, &line_pairs))
+                            .unwrap();
+                    let sub_sync_offsets =
+                        statistics::BoxPlotData::try_from(get_offsets(&ref_sub_spans, &sub_sync_spans, &line_pairs))
+                            .unwrap();
+
+                    let offset_by_subtitle = statistics::OffsetBySubtitle {
+                        sub_id: in_subtitle.id(),
+                        num_line_pairs: line_pairs.len(),
+                        ref_line_count: ref_sub_spans.len(),
+                        in_line_count: in_spans.len(),
+
+                        num_video_sync_splits: video_sync_correction.count_splits(),
+                        num_sub_sync_splits: sub_sync_correction.count_splits(),
+
+                        raw_sync_classification: raw_sync_classification,
+                        video_sync_classification: video_sync_classification,
+                        sub_sync_classification: sub_sync_classification,
+
+                        raw_offsets: raw_offsets,
+                        video_sync_offsets: video_sync_offsets,
+                        sub_sync_offsets: sub_sync_offsets,
+                    };
+
+                    statistics.lock().unwrap().offset_by_subtitle.push(offset_by_subtitle);
+                }
+
+                if only_general_statistics {
+                    return;
+                }
+
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                    return;
+                }
+
+                for &split_penalty in &config.split_penalties {
+                    let split_penalty_fp = FixedPointNumber::from_f64(split_penalty);
+
+                    let custom_align_config = config.align_config.with_split_penalty(split_penalty_fp);
+
+                    for (ref_config, ref_spans) in RefConfig::iter_from(
+                        movie.id.clone(),
+                        &vad_spans,
+                        config.vad_config,
+                        ref_subtitle.id(),
+                        &ref_sub_spans,
+                    ) {
+                        if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+                            return;
+                        }
+
+                        let cache = cache.clone();
+                        let ref_type = ref_config.as_ref_type();
+
+                        let offsets: Vec<i64> = tasks_info.run(
+                            format!("compute sync deltas ({:?}, split penalty {})", ref_type, split_penalty),
+                            progress_info.clone(),
+                            || {
+                                compute_sync_offsets(
+                                    &ref_sub_spans,
+                                    ref_config,
+                                    ref_spans,
+                                    &in_subtitle.id,
+                                    &in_spans,
+                                    &line_pairs,
+                                    cache,
+                                    &custom_align_config,
+                                    true,
+                                )
+                            },
                         );
-                        println!("{:#?} {:#?}", ref_subtitle.data[ref_idx], in_subtitle.data[in_idx]);
-                        println!("--------")
+
+                        {
+                            let mut statistics = statistics.lock().unwrap();
+                            statistics
+                                .sync_offset_histogram_by_split_penalty
+                                .entry(ref_type)
+                                .or_default()
+                                .entry(split_penalty_fp)
+                                .or_default()
+                                .insert_all(&offsets);
+                        }
                     }
                 }
-            }}*/
 
-            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
-                return;
+                for &optimization_value in &config.optimization_values {
+                    let optimization_value_fp = FixedPointNumber::from_f64(optimization_value);
+
+                    let custom_align_config = config.align_config.with_optimization(Some(optimization_value_fp));
+
+                    for (ref_config, ref_spans) in RefConfig::iter_from(
+                        movie.id.clone(),
+                        &vad_spans,
+                        config.vad_config,
+                        ref_subtitle.id(),
+                        &ref_sub_spans,
+                    ) {
+                        if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+                            return;
+                        }
+                        let cache = cache.clone();
+                        let ref_type = ref_config.as_ref_type();
+
+                        let offsets: Vec<i64> = tasks_info.run(
+                            format!(
+                                "compute sync deltas ({:?}, optimization {})",
+                                ref_config.as_ref_type(),
+                                optimization_value
+                            ),
+                            progress_info.clone(),
+                            || {
+                                compute_sync_offsets(
+                                    &ref_sub_spans,
+                                    ref_config,
+                                    ref_spans,
+                                    &in_subtitle.id,
+                                    &in_spans,
+                                    &line_pairs,
+                                    cache,
+                                    &custom_align_config,
+                                    true,
+                                )
+                            },
+                        );
+
+                        {
+                            let mut statistics = statistics.lock().unwrap();
+                            statistics
+                                .sync_offset_histogram_by_optimization
+                                .entry(ref_type)
+                                .or_default()
+                                .entry(optimization_value_fp)
+                                .or_default()
+                                .insert_all(&offsets);
+                        }
+                    }
+                }
+
+                for &min_span_length in &config.min_span_lengths {
+                    if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+                        return;
+                    }
+
+                    let mut custom_vad_config = config.vad_config.clone();
+                    custom_vad_config.min_span_length_ms = min_span_length;
+                    let custom_vad_spans = custom_vad_config.applied_to(&vad_spans_raw);
+
+                    let offsets: Vec<i64> = tasks_info.run(
+                        format!("try min span lengths {}", min_span_length,),
+                        progress_info.clone(),
+                        || {
+                            compute_sync_offsets(
+                                &ref_sub_spans,
+                                RefConfig::Video(movie.id.clone(), custom_vad_config),
+                                &custom_vad_spans,
+                                &in_subtitle.id,
+                                &in_spans,
+                                &line_pairs,
+                                cache.clone(),
+                                &config.align_config,
+                                true,
+                            )
+                        },
+                    );
+
+                    {
+                        let mut statistics = statistics.lock().unwrap();
+                        statistics
+                            .sync_offset_histogram_by_min_span_length
+                            .entry(min_span_length)
+                            .or_default()
+                            .insert_all(&offsets);
+                    }
+                }
+            });
+        }
+
+        thread_pool.join();
+
+        for (movie, ref_subtitle, in_subtitle, progress_info) in iterate_movie_subs_with_ref_sub(&database) {
+            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
+                break;
             }
 
-            for &split_penalty in &config.split_penalties {
-                let split_penalty_fp = FixedPointNumber::from_f64(split_penalty);
+            if only_general_statistics {
+                break;
+            }
 
-                let custom_align_config = config.align_config.with_split_penalty(split_penalty_fp);
+            // cloning data
+            let config: RunConfig = config.clone(); // TODO: use Arc
 
-                let video_sync_deltas: Vec<i64> = tasks_info.run(
-                    format!("compute video sync deltas (split penalty {})", split_penalty),
-                    progress_info.clone(),
-                    || {
-                        compute_video_sync_deltas(
-                            &movie.id,
-                            &vad_spans,
-                            &in_subtitle.id,
-                            &in_spans,
-                            cache.clone(),
-                            &config.vad_config,
-                            &custom_align_config,
-                        )
-                    },
-                );
+            // cloning Arc<T>
+            let statistics: TStatistics = statistics.clone();
+            let cache: TCache = cache.clone();
+            let stop_request_prio: TStopRequestPrio = stop_request_prio.clone();
+            let in_subtitle: TSubtitle = in_subtitle.clone();
+            let ref_subtitle: TSubtitle = ref_subtitle.clone();
+            let movie: TMovie = movie.clone();
+            let tasks_info = tasks_info.clone();
 
-                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+            thread_pool.execute(move || {
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 1 {
                     return;
                 }
 
-                let video_sync_spans = apply_deltas(&in_spans, &video_sync_deltas);
-                let video_sync_offsets = get_offsets(&ref_spans, &video_sync_spans, &line_pairs);
+                let vad_spans_raw: Vec<Span> = cache.lock().unwrap().get_vad_spans_raw(&movie.id);
+                let vad_spans = config.vad_config.applied_to(&vad_spans_raw);
 
-                {
-                    let mut statistics = statistics.lock().unwrap();
-                    let histogram = statistics
-                        .sync_to_video_offset_histogram_by_split_penalty
-                        .entry(split_penalty_fp)
-                        .or_default();
-
-                    for offset in video_sync_offsets {
-                        histogram.insert(offset);
-                    }
-                }
-
-                let sub_sync_deltas: Vec<i64> = tasks_info.run(
-                    format!("compute sub sync deltas (split penalty {})", split_penalty),
-                    progress_info.clone(),
-                    || {
-                        compute_sub_sync_deltas(
-                            &ref_subtitle.id,
-                            &ref_spans,
-                            &in_subtitle.id,
-                            &in_spans,
-                            cache.clone(),
-                            &custom_align_config,
-                        )
-                    },
-                );
-
-                let sub_sync_spans = apply_deltas(&in_spans, &sub_sync_deltas);
-                let sub_sync_offsets = get_offsets(&ref_spans, &sub_sync_spans, &line_pairs);
-
-                {
-                    let mut statistics = statistics.lock().unwrap();
-                    let histogram = statistics
-                        .sync_to_sub_offset_histogram_by_split_penalty
-                        .entry(split_penalty_fp)
-                        .or_default();
-
-                    for offset in sub_sync_offsets {
-                        histogram.insert(offset);
-                    }
-                }
-
-                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
-                    return;
-                }
-            }
-
-            if line_pairs.len() > 0 {
-                let raw_offsets =
-                    statistics::BoxPlotData::try_from(get_offsets(&ref_spans, &in_spans, &line_pairs)).unwrap();
-                let video_sync_offsets =
-                    statistics::BoxPlotData::try_from(get_offsets(&ref_spans, &video_sync_spans, &line_pairs)).unwrap();
-                let sub_sync_offsets =
-                    statistics::BoxPlotData::try_from(get_offsets(&ref_spans, &sub_sync_spans, &line_pairs)).unwrap();
-
-                let offset_by_subtitle = statistics::OffsetBySubtitle {
-                    sub_id: in_subtitle.id(),
-                    num_line_pairs: line_pairs.len(),
-                    ref_line_count: ref_spans.len(),
-                    in_line_count: in_spans.len(),
-
-                    num_video_sync_splits: compute_number_of_splits(&video_sync_deltas),
-                    num_sub_sync_splits: compute_number_of_splits(&sub_sync_deltas),
-
-                    raw_sync_classification: raw_sync_classification,
-                    video_sync_classification: video_sync_classification,
-                    sub_sync_classification: sub_sync_classification,
-
-                    raw_offsets: raw_offsets,
-                    video_sync_offsets: video_sync_offsets,
-                    sub_sync_offsets: sub_sync_offsets,
+                let line_pairs: LinePairs = {
+                    cache
+                        .lock()
+                        .unwrap()
+                        .line_pairs
+                        .get(&(ref_subtitle.id(), in_subtitle.id(), config.line_match_config))
+                        .cloned()
+                        .unwrap()
                 };
 
-                statistics.lock().unwrap().offset_by_subtitle.push(offset_by_subtitle);
-            }
-        });
-    }
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                    return;
+                }
 
-    thread_pool.join();
+                let ref_sub_spans: Vec<Span> = ref_subtitle.data.iter().map(Span::from).collect();
+                let in_spans: Vec<Span> = in_subtitle.data.iter().map(Span::from).collect();
 
-    /*{
-        let mut statistics = statistics.lock().unwrap();
+                for scaling_correct_mode in ScalingCorrectMode::iter() {
+                    for algorithm_variant in statistics::AlgorithmVariant::iter() {
+                        for (ref_config, ref_spans) in RefConfig::iter_from(
+                            movie.id.clone(),
+                            &vad_spans,
+                            config.vad_config,
+                            ref_subtitle.id(),
+                            &ref_sub_spans,
+                        ) {
+                            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+                                return;
+                            }
+                            let custom_align_config: AlignConfig = AlignConfig {
+                                align_mode: match algorithm_variant {
+                                    statistics::AlgorithmVariant::Nosplit => AlignMode::NoSplit,
+                                    statistics::AlgorithmVariant::Split => AlignMode::Split {
+                                        split_penalty: FixedPointNumber::from_f64(default_split_penalty),
+                                        optimization: Some(FixedPointNumber::from_f64(default_optimization)),
+                                    },
+                                },
+                                ms_per_alg_step: config.align_config.ms_per_alg_step,
+                                scaling_correct_mode: *scaling_correct_mode,
+                                scoring_mode: config.align_config.scoring_mode,
+                            };
+                            let cache = cache.clone();
+                            let ref_type = ref_config.as_ref_type();
+                            let offsets = tasks_info.run(
+                                format!(
+                                    "compute sync deltas ({:?}, {:?}, {:?})",
+                                    ref_type, scaling_correct_mode, algorithm_variant
+                                ),
+                                progress_info.clone(),
+                                || {
+                                    compute_sync_offsets(
+                                        &ref_sub_spans,
+                                        ref_config,
+                                        ref_spans,
+                                        &in_subtitle.id,
+                                        &in_spans,
+                                        &line_pairs,
+                                        cache,
+                                        &custom_align_config,
+                                        true,
+                                    )
+                                },
+                            );
 
-        statistics.offset_by_subtitle.sort_by_key(|offset_statistics| {
-            Reverse((
-                offset_statistics.sub_sync_offsets.perc90,
-                offset_statistics.video_sync_offsets.perc90,
-                offset_statistics.raw_offsets.perc90,
-            ))
-        });
+                            let mut histogram = statistics::Histogram::default();
+                            histogram.insert_all(&offsets);
 
-        for d in statistics.offset_by_subtitle.iter().rev() {
-            println!("{:#?}", d);
+                            {
+                                let algorithm_conf = statistics::AlgorithmConf {
+                                    sync_ref_type: ref_type,
+                                    algorithm_variant: *algorithm_variant,
+                                    scaling_correct_mode: *scaling_correct_mode,
+                                };
+
+                                let mut statistics = statistics.lock().unwrap();
+                                statistics
+                                    .all_configurations_offset_histogram
+                                    .inner_mut()
+                                    .entry(algorithm_conf)
+                                    .or_insert_with(|| statistics::Histogram::default())
+                                    .merge_from(&histogram);
+                            }
+                        }
+                    }
+                }
+            });
         }
-    }*/
 
-    println!("");
-    println!("Done computing!");
-    println!("Writing cache...");
+        thread_pool.join();
 
-    if let Some(cache_dir) = &cache_dir {
-        std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+        /*{
+            let mut statistics = statistics.lock().unwrap();
 
-        let file = File::create(cache_dir.join("cache.dat")).expect("cache file not found");
-        let mut file_write = BufWriter::with_capacity(1024, file);
-        rmps::encode::write_named(&mut file_write, &*cache.lock().unwrap())
-            .with_context(|_| TopLevelErrorKind::SerializingCacheFailed {})?;
+            statistics.offset_by_subtitle.sort_by_key(|offset_statistics| {
+                Reverse((
+                    offset_statistics.sub_sync_offsets.perc90,
+                    offset_statistics.video_sync_offsets.perc90,
+                    offset_statistics.raw_offsets.perc90,
+                ))
+            });
+
+            for d in statistics.offset_by_subtitle.iter().rev() {
+                println!("{:#?}", d);
+            }
+        }*/
+
+        println!("");
+        println!("Done computing!");
+        println!("Writing cache...");
+
+        if let Some(cache_dir) = &cache_dir {
+            std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+
+            let file = File::create(cache_dir.join("cache.dat")).expect("cache file not found");
+            let mut file_write = BufWriter::with_capacity(1024, file);
+            rmps::encode::write_named(&mut file_write, &*cache.lock().unwrap())
+                .with_context(|_| TopLevelErrorKind::SerializingCacheFailed {})?;
+        }
+
+        std::fs::create_dir_all(&output_dir).expect("failed to create statistics dir");
+
+        println!("Writing statistics...");
+
+        {
+            let statistics_file =
+                File::create(output_dir.join("statistics.json")).expect("statistics file could not be created");
+            let file_write = BufWriter::with_capacity(1024, statistics_file);
+            serde_json::to_writer_pretty(file_write, &*statistics.lock().unwrap()).expect("writing statistics failed");
+        }
     }
 
-    std::fs::create_dir_all(&output_dir).expect("failed to create statistics dir");
+    if gather_transient_statistics {
+        println!("Gather transient statistics...");
 
-    println!("Writing statistics...");
+        let transient_statistics: TTransStatistics = Arc::new(Mutex::new(statistics::TransientRoot::default()));
 
-    {
-        let statistics_file =
-            File::create(output_dir.join("statistics.json")).expect("statistics file could not be created");
-        let file_write = BufWriter::with_capacity(1024, statistics_file);
-        serde_json::to_writer_pretty(file_write, &*statistics.lock().unwrap()).expect("writing statistics failed");
+        for (movie, ref_subtitle, in_subtitle, progress_info) in iterate_movie_subs_with_ref_sub(&database) {
+            let vad_spans_raw: Vec<Span> = cache.lock().unwrap().get_vad_spans_raw(&movie.id);
+            let vad_spans = config.vad_config.applied_to(&vad_spans_raw);
+
+            if stop_request_prio.load(atomic::Ordering::SeqCst) >= 2 {
+                break;
+            }
+
+            let ref_sub_spans: Vec<Span> = ref_subtitle.data.iter().map(Span::from).collect();
+            let in_spans: Vec<Span> = in_subtitle.data.iter().map(Span::from).collect();
+
+            for &optimization_value in &config.optimization_values {
+                let optimization_value_fp = FixedPointNumber::from_f64(optimization_value);
+
+                let custom_align_config = config.align_config.with_optimization(Some(optimization_value_fp));
+
+                if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+                    break;
+                }
+                let cache = cache.clone();
+
+                let duration = tasks_info.run(
+                    format!("gather time for (optimization {})", optimization_value),
+                    progress_info.clone(),
+                    || {
+                        let start_time = std::time::Instant::now();
+                        compute_sync_deltas(
+                            RefConfig::Subtitle(ref_subtitle.id()),
+                            &ref_sub_spans,
+                            &in_subtitle.id,
+                            &in_spans,
+                            cache,
+                            &custom_align_config,
+                            false,
+                        );
+                        let end_time = std::time::Instant::now();
+                        end_time - start_time
+                    },
+                );
+
+                {
+                    let mut transient_statistics = transient_statistics.lock().unwrap();
+                    transient_statistics
+                        .time_required_by_optimization_value
+                        .inner_mut()
+                        .entry(optimization_value_fp)
+                        .or_default()
+                        .push(duration.as_millis().try_into().unwrap());
+                }
+            }
+
+            for scaling_correct_mode in ScalingCorrectMode::iter() {
+                for algorithm_variant in statistics::AlgorithmVariant::iter() {
+                    for (ref_config, ref_spans) in RefConfig::iter_from(
+                        movie.id.clone(),
+                        &vad_spans,
+                        config.vad_config,
+                        ref_subtitle.id(),
+                        &ref_sub_spans,
+                    ) {
+                        if stop_request_prio.load(atomic::Ordering::SeqCst) >= 3 {
+                            break;
+                        }
+                        let custom_align_config: AlignConfig = AlignConfig {
+                            align_mode: match algorithm_variant {
+                                statistics::AlgorithmVariant::Nosplit => AlignMode::NoSplit,
+                                statistics::AlgorithmVariant::Split => AlignMode::Split {
+                                    split_penalty: FixedPointNumber::from_f64(default_split_penalty),
+                                    optimization: Some(FixedPointNumber::from_f64(default_optimization)),
+                                },
+                            },
+                            ms_per_alg_step: config.align_config.ms_per_alg_step,
+                            scaling_correct_mode: *scaling_correct_mode,
+                            scoring_mode: config.align_config.scoring_mode,
+                        };
+
+                        let cache = cache.clone();
+                        let ref_type = ref_config.as_ref_type();
+                        let duration = tasks_info.run(
+                            format!(
+                                "gather time for algorithm ({:?}, {:?}, {:?})",
+                                ref_type, scaling_correct_mode, algorithm_variant
+                            ),
+                            progress_info.clone(),
+                            || {
+                                let start_time = std::time::Instant::now();
+                                compute_sync_deltas(
+                                    ref_config,
+                                    ref_spans,
+                                    &in_subtitle.id,
+                                    &in_spans,
+                                    cache,
+                                    &custom_align_config,
+                                    false,
+                                );
+                                let end_time = std::time::Instant::now();
+                                end_time - start_time
+                            },
+                        );
+
+                        {
+                            let algorithm_conf = statistics::AlgorithmConf {
+                                sync_ref_type: ref_type,
+                                algorithm_variant: *algorithm_variant,
+                                scaling_correct_mode: *scaling_correct_mode,
+                            };
+
+                            let mut transient_statistics = transient_statistics.lock().unwrap();
+                            transient_statistics
+                                .time_required_by_algorithm
+                                .inner_mut()
+                                .entry(algorithm_conf)
+                                .or_default()
+                                .push(duration.as_millis().try_into().unwrap());
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("Writing transient statistics...");
+
+        {
+            let statistics_file = File::create(output_dir.join("transient-statistics.json"))
+                .expect("transient statistics file could not be created");
+            let file_write = BufWriter::with_capacity(1024, statistics_file);
+            serde_json::to_writer_pretty(file_write, &*transient_statistics.lock().unwrap())
+                .expect("writing transient statistics file failed");
+        }
     }
 
     println!("Done writing!");
@@ -1949,9 +2645,10 @@ fn main() {
 // interpreted by python script
 mod statistics {
 
-    use serde::{Deserialize, Serialize};
+    use serde::{Deserialize, Serialize, Serializer};
     use std::collections::HashMap;
     use std::convert::TryFrom;
+    use std::hash::Hash;
 
     use super::types::*;
 
@@ -1999,14 +2696,86 @@ mod statistics {
         Subtitle,
     }
 
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    /*impl SyncReferenceType {
+        pub fn iter() -> &'static [SyncReferenceType] {
+            &[SyncReferenceType::Video, SyncReferenceType::Subtitle]
+        }
+    }*/
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+    pub enum AlgorithmVariant {
+        Nosplit,
+        Split,
+    }
+
+    impl AlgorithmVariant {
+        pub fn iter() -> &'static [AlgorithmVariant] {
+            &[AlgorithmVariant::Nosplit, AlgorithmVariant::Split]
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
+    pub struct AlgorithmConf {
+        pub sync_ref_type: SyncReferenceType,
+        pub algorithm_variant: AlgorithmVariant,
+        pub scaling_correct_mode: super::ScalingCorrectMode,
+    }
+
+    #[derive(Debug)]
+    pub struct ListOfPairsMap<K: Eq + Hash, V>(HashMap<K, V>);
+
+    impl<K: Eq + Hash, V> std::default::Default for ListOfPairsMap<K, V> {
+        fn default() -> ListOfPairsMap<K, V> {
+            ListOfPairsMap(HashMap::new())
+        }
+    }
+
+    impl<K: Eq + Hash, V> ListOfPairsMap<K, V> {
+        pub fn inner_mut(&mut self) -> &mut HashMap<K, V> {
+            &mut self.0
+        }
+    }
+
+    impl<K, V> Serialize for ListOfPairsMap<K, V>
+    where
+        K: Eq + Hash + Serialize,
+        V: Serialize,
+    {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            #[derive(Serialize)]
+            struct Entry<K, V> {
+                key: K,
+                val: V,
+            }
+
+            serializer.collect_seq(self.0.iter().map(|(key, val)| Entry { key, val }))
+        }
+    }
+
+    #[derive(Debug, Serialize, Default)]
+    pub struct TransientRoot {
+        pub time_required_by_algorithm: ListOfPairsMap<AlgorithmConf, Vec<i64>>,
+        pub time_required_by_optimization_value: ListOfPairsMap<FixedPointNumber, Vec<i64>>,
+    }
+
+    #[derive(Debug, Serialize, Default)]
     pub struct Root {
         pub general: GeneralStatistics,
 
         pub offset_by_subtitle: Vec<OffsetBySubtitle>,
 
-        pub sync_to_video_offset_histogram_by_split_penalty: HashMap<super::FixedPointNumber, Histogram>,
-        pub sync_to_sub_offset_histogram_by_split_penalty: HashMap<super::FixedPointNumber, Histogram>,
+        pub sync_offset_histogram_by_split_penalty:
+            HashMap<SyncReferenceType, HashMap<super::FixedPointNumber, Histogram>>,
+
+        pub sync_offset_histogram_by_optimization:
+            HashMap<SyncReferenceType, HashMap<super::FixedPointNumber, Histogram>>,
+
+        pub sync_offset_histogram_by_min_span_length: HashMap<i64, Histogram>,
+
+        pub all_configurations_offset_histogram: ListOfPairsMap<AlgorithmConf, Histogram>,
 
         // ----------------
         pub subtitle_span_length_histogram: Histogram,
@@ -2077,6 +2846,8 @@ mod statistics {
 
         pub total_subtitles_count: usize,
 
+        pub required_framerate_adjustments: usize,
+
         pub raw_sync_class_counts: SyncClassificationsCount,
         pub sync_to_video_sync_class_counts: SyncClassificationsCount,
         pub sync_to_sub_sync_class_counts: SyncClassificationsCount,
@@ -2128,38 +2899,50 @@ mod statistics {
             *self.occurrences.entry(data).or_insert(0) += 1;
         }
 
+        pub fn insert_all(&mut self, data: &[i64]) {
+            for &d in data {
+                self.insert(d);
+            }
+        }
+
+        pub fn merge_from(&mut self, other: &Histogram) {
+            for (key, value) in other.occurrences.iter() {
+                *self.occurrences.entry(*key).or_insert(0) += value;
+            }
+        }
+
         /*fn write(&self, w: &mut impl Write) {
             for (data, nr) in self.occurences.iter() {
                 writeln!(w, "{},{}", data, nr).expect("failed to write");
             }
         }*/
     }
-
 }
 
 mod cache {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
-    use std::path::PathBuf;
 
     use super::types::*;
 
     #[derive(Debug, Serialize, Deserialize, Default)]
     pub struct Root {
         #[serde(default)]
-        pub vad_spans: HashMap<PathBuf, Vec<super::Span>>,
+        pub vad_spans: HashMap<MovieID, Vec<super::Span>>,
 
         /// Reference Subtitle ID x Input Subtitle ID -> List<(Index of ref line, Index of input line)>
         #[serde(default)]
         pub line_pairs: HashMap<(SubtitleID, SubtitleID, super::LineMatchingConfig), LinePairs>,
 
         #[serde(default)]
-        pub video_sync_deltas: HashMap<(MovieID, SubtitleID, super::AlignMode, super::VADConfig), Vec<i64>>,
-
-        #[serde(default)]
-        pub sub_sync_deltas: HashMap<(SubtitleID, SubtitleID, super::AlignMode), Vec<i64>>,
+        pub sync_deltas: HashMap<(RefConfig, SubtitleID, FixedPointNumber, super::AlignMode), Vec<i64>>,
     }
 
+    impl Root {
+        pub fn get_vad_spans_raw(&self, movie_id: &MovieID) -> Vec<super::Span> {
+            self.vad_spans.get(movie_id).unwrap().clone()
+        }
+    }
 }
 
 mod database {
@@ -2222,7 +3005,6 @@ mod database {
     #[derive(Debug, Clone, Deserialize)]
     pub struct Subtitle {
         pub id: String,
-        pub movie_id: String,
 
         pub opensubtitles_metadata: OpensubtitlesMetadata,
         pub data: Vec<LineInfo>,
@@ -2249,5 +3031,4 @@ mod database {
         pub end_ms: i64,
         pub text: String,
     }
-
 }

@@ -1,63 +1,90 @@
 use crate::rating_type::{Rating, RatingDelta, RatingDeltaDelta, RatingExt};
-use crate::time_types::{TimeDelta, TimePoint, TimeSpan};
-use std::cmp::{max, min};
+use crate::time_types::TimeDelta;
+use std::cmp::min;
 use std::iter::once;
 use std::ops::Add;
 
-#[derive(Clone, Copy, Debug)]
-pub struct PositionInfo {
-    pub position: TimePoint,
-    pub drag: bool, // if true, position has a "delta" of 1; if false it has a delta of 0
+type Point = TimeDelta;
+type PointDiff = TimeDelta; // Pos - Pos
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct PointSpan {
+    pub start: Point,
+    pub end: Point,
 }
 
-impl PositionInfo {
+//
+type Offset = Point;
+
+impl PointSpan {
+    fn new(start: Point, end: Point) -> PointSpan {
+        assert!(start < end);
+        PointSpan { start, end }
+    }
+
+    fn len(self) -> PointDiff {
+        self.end - self.start
+    }
+
+    fn half(self) -> Point {
+        Point::from_i64((self.end.as_i64() + self.start.as_i64()) / 2)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct OffsetInfo {
+    pub offset: Point,
+    pub drag: bool, // if true, offset has a "delta" of 1; if false it has a delta of 0
+}
+
+impl OffsetInfo {
     #[inline]
-    fn constant(position: TimePoint) -> PositionInfo {
-        PositionInfo { position, drag: false }
+    fn constant(offset: Offset) -> OffsetInfo {
+        OffsetInfo { offset, drag: false }
     }
 
     #[inline]
-    pub fn start_position(&self) -> TimePoint {
-        self.position
+    pub fn start_offset(&self) -> Offset {
+        self.offset
     }
 
     #[inline]
-    pub fn end_position(&self, span_length: TimeDelta) -> TimePoint {
+    pub fn end_offset(&self, span_length: PointDiff) -> Offset {
         if self.drag {
-            self.position + span_length - TimeDelta::one()
+            self.offset + (span_length - PointDiff::one())
         } else {
-            self.position
+            self.offset
         }
     }
 
     #[inline]
-    pub fn exclusive_end_position(&self, span_length: TimeDelta) -> TimePoint {
+    pub fn exclusive_end_offset(&self, span_length: PointDiff) -> Offset {
         if self.drag {
-            self.position + span_length
+            self.offset + span_length
         } else {
-            self.position
+            self.offset
         }
     }
 
     #[inline]
-    fn advanced_position(self, time_delta: TimeDelta) -> TimePoint {
+    fn advanced_offset(self, time_delta: PointDiff) -> Offset {
         if self.drag {
-            self.position + time_delta
+            self.offset + time_delta
         } else {
-            self.position
+            self.offset
         }
     }
 
     #[inline]
-    fn advanced(self, time_delta: TimeDelta) -> PositionInfo {
+    fn advanced(self, time_delta: TimeDelta) -> OffsetInfo {
         if self.drag {
-            PositionInfo {
-                position: self.position + time_delta,
+            OffsetInfo {
+                offset: self.offset + time_delta,
                 drag: true,
             }
         } else {
-            PositionInfo {
-                position: self.position,
+            OffsetInfo {
+                offset: self.offset,
                 drag: false,
             }
         }
@@ -66,7 +93,7 @@ impl PositionInfo {
     #[inline]
     fn advance(&mut self, time_delta: TimeDelta) {
         if self.drag {
-            self.position += time_delta;
+            self.offset += time_delta;
         }
     }
 }
@@ -122,7 +149,7 @@ impl RatingInfo {
 
 #[derive(Clone, Debug)]
 pub struct DualInfo {
-    position_info: PositionInfo,
+    offset_info: OffsetInfo,
     rating_info: RatingInfo,
 }
 
@@ -131,7 +158,7 @@ impl DualInfo {
     fn advanced(self, len: TimeDelta) -> DualInfo {
         DualInfo {
             rating_info: self.rating_info.advanced(len),
-            position_info: self.position_info.advanced(len),
+            offset_info: self.offset_info.advanced(len),
         }
     }
 }
@@ -150,7 +177,7 @@ impl Add<RatingInfo> for RatingInfo {
 
 #[derive(Debug)]
 pub struct RatingBuffer {
-    pub start: TimePoint,
+    pub start: Point,
     pub buffer: Vec<RatingSegment>,
 }
 
@@ -172,50 +199,52 @@ impl RatingBuffer {
     }
 
     #[inline]
-    pub fn first_end_point(&self) -> Option<TimePoint> {
+    pub fn first_end_point(&self) -> Option<Point> {
         self.buffer.first().map(|rating_segment| rating_segment.end_point)
     }
 
     #[inline]
-    pub fn end(&self) -> Option<TimePoint> {
+    pub fn end(&self) -> Option<Point> {
         self.buffer.last().map(|rating_segment| rating_segment.end_point)
     }
 
     #[inline]
-    pub fn start(&self) -> TimePoint {
+    pub fn start(&self) -> Point {
         self.start
     }
 
     #[inline]
-    pub fn maximum(&self) -> Rating {
-        self.buffer
-            .iter()
-            .fold(
-                (Rating::zero(), self.start),
-                #[inline]
-                |(current_max, segment_start): (Rating, TimePoint), segment: &RatingSegment| {
-                    assert!(segment_start < segment.end_point);
-                    let start_rating = segment.start_rating();
-                    let end_rating = segment.end_rating(segment.end_point - segment_start);
+    pub fn maximum(&self) -> (Rating, Point) {
+        let (max, max_point, _) = self.buffer.iter().fold(
+            (Rating::zero(), self.start, self.start),
+            #[inline]
+            |(current_max, current_max_point, segment_start): (Rating, Point, Point), segment: &RatingSegment| {
+                assert!(segment_start < segment.end_point);
+                let start_rating = segment.start_rating();
+                let end_rating = segment.end_rating(segment.end_point - segment_start);
 
-                    let new_max = max(max(current_max, start_rating), end_rating);
-
-                    (new_max, segment.end_point)
-                },
-            )
-            .0
+                if start_rating > current_max {
+                    (start_rating, segment_start, segment.end_point)
+                } else if end_rating > current_max {
+                    (start_rating, segment.end_point - TimeDelta::one(), segment.end_point)
+                } else {
+                    (current_max, current_max_point, segment.end_point)
+                }
+            },
+        );
+        (max, max_point)
     }
 }
 
 pub struct DifferentialRatingBufferBuilder {
-    start: TimePoint,
-    end: TimePoint,
+    start: TimeDelta,
+    end: TimeDelta,
     buffer: Vec<Segment<RatingDeltaDelta>>,
 }
 
 impl DifferentialRatingBufferBuilder {
     #[inline]
-    pub fn new(start: TimePoint, end: TimePoint) -> DifferentialRatingBufferBuilder {
+    pub fn new(start: Point, end: Point) -> DifferentialRatingBufferBuilder {
         assert!(start < end);
 
         DifferentialRatingBufferBuilder {
@@ -226,7 +255,7 @@ impl DifferentialRatingBufferBuilder {
     }
 
     #[inline]
-    pub fn add_segment(&mut self, segment_end: TimePoint, segment_end_delta_delta: RatingDeltaDelta) {
+    pub fn add_segment(&mut self, segment_end: Point, segment_end_delta_delta: RatingDeltaDelta) {
         if let Some(last_segment) = self.buffer.last_mut() {
             assert!(last_segment.end_point <= segment_end);
 
@@ -259,7 +288,7 @@ impl DifferentialRatingBufferBuilder {
 }
 
 pub struct DifferentialRatingBuffer {
-    start: TimePoint,
+    start: TimeDelta,
     buffer: Vec<Segment<RatingDeltaDelta>>,
 }
 
@@ -269,7 +298,7 @@ impl DifferentialRatingBuffer {
         struct ScanState {
             rating: Rating,
             delta: RatingDelta,
-            last_segment_end: TimePoint,
+            last_segment_end: TimeDelta,
         }
 
         let start_state = ScanState {
@@ -307,17 +336,17 @@ impl DifferentialRatingBuffer {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Segment<D> {
-    pub end_point: TimePoint,
+    pub end_point: Point,
     pub data: D,
 }
 
 impl<D> Segment<D> {
     #[inline]
-    fn with_start_point(self, start_point: TimePoint) -> FullSegment<D> {
+    fn with_start_point(self, start_point: Point) -> FullSegment<D> {
         assert!(start_point < self.end_point);
 
         FullSegment {
-            span: TimeSpan::new(start_point, self.end_point),
+            span: PointSpan::new(start_point, self.end_point),
             data: self.data,
         }
     }
@@ -325,7 +354,7 @@ impl<D> Segment<D> {
 
 #[derive(Clone, Copy, Debug)]
 pub struct FullSegment<D> {
-    pub span: TimeSpan,
+    pub span: PointSpan,
     pub data: D,
 }
 impl<D> FullSegment<D> {
@@ -336,6 +365,16 @@ impl<D> FullSegment<D> {
             data: self.data,
         }
     }
+
+    #[inline]
+    pub fn start_point(self) -> Point {
+        self.span.start
+    }
+
+    #[inline]
+    pub fn end_point(self) -> Point {
+        self.span.end
+    }
 }
 
 #[derive(Debug)]
@@ -343,7 +382,7 @@ pub struct FullSegmentIterator<D, I>
 where
     I: Iterator<Item = FullSegment<D>>,
 {
-    start: TimePoint,
+    start: TimeDelta,
     iter: I,
 }
 
@@ -361,7 +400,7 @@ pub struct SegmentIterator<D, I>
 where
     I: Iterator<Item = Segment<D>>,
 {
-    start: TimePoint,
+    start: Point,
     iter: I,
 }
 
@@ -370,17 +409,13 @@ where
     I: Iterator<Item = Segment<D>>,
 {
     #[inline]
-    pub fn annotate_with_segment_start_times(self) -> FullSegmentIterator<D, impl Iterator<Item = FullSegment<D>>> {
+    pub fn annotate_with_segment_start_points(self) -> FullSegmentIterator<D, impl Iterator<Item = FullSegment<D>>> {
         FullSegmentIterator::<D, _> {
             start: self.start,
             iter: self.iter.scan(
                 self.start,
                 #[inline]
-                |last_segment_end: &mut TimePoint, segment: Segment<D>| {
-                    /*println!(
-                        "ANNOTATE segment start {}   segment end {}",
-                        *last_segment_end, segment.end_point
-                    );*/
+                |last_segment_end: &mut Point, segment: Segment<D>| {
                     if *last_segment_end >= segment.end_point {
                         // DEBUG TODO: remove
                         println!(
@@ -388,17 +423,15 @@ where
                             *last_segment_end, segment.end_point
                         );
                     }
-
                     assert!(*last_segment_end < segment.end_point);
 
-                    let span = TimeSpan::new(*last_segment_end, segment.end_point);
+                    let result = Some(FullSegment {
+                        span: PointSpan::new(*last_segment_end, segment.end_point),
+                        data: segment.data,
+                    });
 
                     *last_segment_end = segment.end_point;
-
-                    Some(FullSegment {
-                        span: span,
-                        data: segment.data,
-                    })
+                    result
                 },
             ),
         }
@@ -438,7 +471,7 @@ where
     }
 
     #[inline]
-    pub fn append(self, end_point: TimePoint, data: D) -> SegmentIterator<D, impl SI<D>> {
+    pub fn append(self, end_point: Point, data: D) -> SegmentIterator<D, impl SI<D>> {
         SegmentIterator::<D, _> {
             start: self.start,
             iter: self.iter.chain(once(Segment::<D> {
@@ -462,24 +495,34 @@ impl<D, I: SFI<D>> FullSegmentIterator<D, I> {
     }
 }
 
-pub type PositionSegment = Segment<PositionInfo>;
-impl PositionSegment {
+pub type OffsetSegment = Segment<OffsetInfo>;
+impl OffsetSegment {
     #[inline]
-    pub fn start_position(&self) -> TimePoint {
-        self.data.start_position()
+    pub fn start_offset(&self) -> Offset {
+        self.data.start_offset()
     }
 
     #[inline]
-    pub fn end_position(&self, len: TimeDelta) -> TimePoint {
-        self.data.end_position(len)
+    pub fn end_offset(&self, len: PointDiff) -> Offset {
+        self.data.end_offset(len)
     }
 }
 
-pub type PositionFullSegment = FullSegment<PositionInfo>;
-impl PositionFullSegment {
+pub type OffsetFullSegment = FullSegment<OffsetInfo>;
+impl OffsetFullSegment {
     #[inline]
-    pub fn exclusive_end_position(&self) -> TimePoint {
-        self.data.exclusive_end_position(self.span.len())
+    pub fn exclusive_end_offset(self) -> Offset {
+        self.data.exclusive_end_offset(self.span.len())
+    }
+
+    #[inline]
+    pub fn start_offset(self) -> Offset {
+        self.data.start_offset()
+    }
+
+    #[inline]
+    pub fn end_offset(self) -> Offset {
+        self.data.end_offset(self.span.len())
     }
 }
 
@@ -506,7 +549,7 @@ impl DualSegment {
     #[inline]
     fn advance(&mut self, delta: TimeDelta) {
         self.data.rating_info.advance(delta);
-        self.data.position_info.advance(delta);
+        self.data.offset_info.advance(delta);
     }
 
     #[inline]
@@ -518,10 +561,10 @@ impl DualSegment {
     }
 
     #[inline]
-    fn as_position_segment(&self) -> PositionSegment {
-        PositionSegment {
+    fn as_offset_segment(&self) -> OffsetSegment {
+        OffsetSegment {
             end_point: self.end_point,
-            data: self.data.position_info,
+            data: self.data.offset_info,
         }
     }
 
@@ -531,8 +574,8 @@ impl DualSegment {
     }
 
     #[inline]
-    pub fn start_position(&self) -> TimePoint {
-        self.data.position_info.position
+    pub fn start_offset(&self) -> Offset {
+        self.data.offset_info.offset
     }
 }
 
@@ -545,8 +588,8 @@ impl DualFullSegment {
     }
 
     #[inline]
-    pub fn start_position(&self) -> TimePoint {
-        self.data.position_info.position
+    pub fn start_offset(&self) -> Offset {
+        self.data.offset_info.offset
     }
 
     #[inline]
@@ -559,8 +602,8 @@ impl DualFullSegment {
     }
 
     #[inline]
-    pub fn exclusive_end_position(&self) -> TimePoint {
-        self.data.position_info.exclusive_end_position(self.span.len())
+    pub fn exclusive_end_offset(&self) -> Offset {
+        self.data.offset_info.exclusive_end_offset(self.span.len())
     }
 
     #[inline]
@@ -575,8 +618,8 @@ impl<T, D> SI<D> for T where T: Iterator<Item = Segment<D>> {}
 pub trait RI: Iterator<Item = RatingSegment> {}
 impl<T> RI for T where T: Iterator<Item = RatingSegment> {}
 
-pub trait PI: Iterator<Item = PositionSegment> {}
-impl<T> PI for T where T: Iterator<Item = PositionSegment> {}
+pub trait PI: Iterator<Item = OffsetSegment> {}
+impl<T> PI for T where T: Iterator<Item = OffsetSegment> {}
 
 pub trait DI: Iterator<Item = DualSegment> {}
 impl<T> DI for T where T: Iterator<Item = DualSegment> {}
@@ -587,8 +630,8 @@ impl<T, D> SFI<D> for T where T: Iterator<Item = FullSegment<D>> {}
 pub trait RFI: Iterator<Item = RatingFullSegment> {}
 impl<T> RFI for T where T: Iterator<Item = RatingFullSegment> {}
 
-pub trait PFI: Iterator<Item = PositionFullSegment> {}
-impl<T> PFI for T where T: Iterator<Item = PositionFullSegment> {}
+pub trait PFI: Iterator<Item = OffsetFullSegment> {}
+impl<T> PFI for T where T: Iterator<Item = OffsetFullSegment> {}
 
 pub trait DFI: Iterator<Item = DualFullSegment> {}
 impl<T> DFI for T where T: Iterator<Item = DualFullSegment> {}
@@ -603,15 +646,49 @@ impl<I: DI> DualIterator<I> {
         }
     }
 
-    pub fn save_separate(self) -> SeparateDualBuffer {
-        let (rating_buffer, position_buffer): (Vec<RatingSegment>, Vec<PositionSegment>) = into_push_iter(
+    #[inline]
+    pub fn add_ratings_from(mut self, mut iter2: RatingIterator<impl RI>) -> DualFullSegmentIterator<impl DFI> {
+        assert!(self.start == iter2.start);
+
+        let start = self.start;
+        //println!("ADDER segment start {}", start);
+
+        let dual_seg1 = self
+            .iter
+            .next()
+            .expect("First iterator should have at least one element");
+        let dual_seg2 = iter2
+            .iter
+            .next()
+            .expect("Second iterator should have at least one element");
+
+        DualFullSegmentIterator::<_> {
+            start: start,
+            iter: RatingAdderIterator2::<_, _> {
+                segment_start: start,
+                dual_seg1: dual_seg1,
+                dual_seg2: dual_seg2,
+                input_iter1: self.iter,
+                input_iter2: iter2.iter,
+                finished: false,
+            },
+        }
+    }
+
+    #[inline]
+    pub fn save_separate(self, epsilon: RatingDelta) -> SeparateDualBuffer {
+        let (rating_buffer, offset_buffer): (Vec<RatingSegment>, Vec<OffsetSegment>) = into_push_iter(
             self.iter,
             dual_push_iter(
                 only_ratings_push_iter(simplifiy_ratings_push_iter(
                     self.start,
-                    discard_start_times_push_iter(collect_to_vec_push_iter()),
+                    discard_start_times_push_iter(aggressive_simplifiy_ratings_push_iter(
+                        self.start,
+                        epsilon,
+                        discard_start_times_push_iter(collect_to_vec_push_iter()),
+                    )),
                 )),
-                only_positions_push_iter(simplifiy_positions_push_iter(
+                only_offsets_push_iter(simplifiy_offsets_push_iter(
                     self.start,
                     discard_start_times_push_iter(collect_to_vec_push_iter()),
                 )),
@@ -620,7 +697,7 @@ impl<I: DI> DualIterator<I> {
                 only_ratings_push_iter(
                     collect_to_vec_push_iter(),
                 ),
-                only_positions_push_iter(
+                only_offsets_push_iter(
                     collect_to_vec_push_iter(),
                 ),
             ),*/
@@ -631,20 +708,22 @@ impl<I: DI> DualIterator<I> {
                 start: self.start,
                 buffer: rating_buffer,
             },
-            position_buffer: PositionBuffer {
+            offset_buffer: OffsetBuffer {
                 start: self.start,
-                buffer: position_buffer,
+                buffer: offset_buffer,
             },
         }
     }
 
-    pub fn only_positions(self) -> PositionIterator<impl PI> {
-        PositionIterator::<_> {
+    #[inline]
+    pub fn only_offsets(self) -> OffsetIterator<impl PI> {
+        OffsetIterator::<_> {
             start: self.start,
-            iter: self.iter.map(|dual_segment| dual_segment.as_position_segment()),
+            iter: self.iter.map(|dual_segment| dual_segment.as_offset_segment()),
         }
     }
 
+    #[inline]
     pub fn only_ratings(self) -> RatingIterator<impl RI> {
         RatingIterator::<_> {
             start: self.start,
@@ -652,6 +731,7 @@ impl<I: DI> DualIterator<I> {
         }
     }
 
+    #[inline]
     pub fn simplify(mut self) -> DualFullSegmentIterator<impl DFI> {
         DualFullSegmentIterator {
             start: self.start,
@@ -663,11 +743,11 @@ impl<I: DI> DualIterator<I> {
     }
 }
 
-pub type PositionIterator<I> = SegmentIterator<PositionInfo, I>;
-impl<I: PI> PositionIterator<I> {
+pub type OffsetIterator<I> = SegmentIterator<OffsetInfo, I>;
+impl<I: PI> OffsetIterator<I> {
     #[inline]
-    pub fn save(self) -> PositionBuffer {
-        PositionBuffer {
+    pub fn save(self) -> OffsetBuffer {
+        OffsetBuffer {
             start: self.start,
             buffer: self.iter.collect(),
         }
@@ -683,7 +763,6 @@ impl<I: RI> RatingIterator<I> {
             buffer: self.iter.collect(),
         }
     }
-
     #[inline]
     pub fn save_simplified(self) -> RatingBuffer {
         RatingBuffer {
@@ -692,6 +771,20 @@ impl<I: RI> RatingIterator<I> {
                 self.iter,
                 simplifiy_ratings_push_iter(self.start, discard_start_times_push_iter(collect_to_vec_push_iter())),
             ),
+        }
+    }
+    #[inline]
+    pub fn extend_to(self, end_point: Point) -> RatingIterator<impl RI> {
+        RatingIterator {
+            start: self.start,
+            iter: ExtendToIterator {
+                input_iter: self.iter,
+                data_to_extend: Some(RatingInfo {
+                    rating: Rating::zero(),
+                    delta: RatingDelta::zero(),
+                }),
+                end_point: end_point,
+            },
         }
     }
 
@@ -711,17 +804,6 @@ impl<I: RI> RatingIterator<I> {
     }
 
     #[inline]
-    pub fn extend_to(self, end_point: TimePoint) -> RatingIterator<impl RI> {
-        self.append(
-            end_point,
-            RatingInfo {
-                rating: Rating::zero(),
-                delta: RatingDelta::zero(),
-            },
-        )
-    }
-
-    #[inline]
     pub fn add_rating(self, rating_delta: RatingDelta) -> RatingIterator<impl RI> {
         RatingIterator::<_> {
             start: self.start,
@@ -736,19 +818,52 @@ impl<I: RI> RatingIterator<I> {
     }
 
     #[inline]
-    pub fn clamp_end(self, clamp: TimePoint) -> RatingIterator<impl RI> {
+    pub fn clamp_end(self, clamp: Point) -> RatingIterator<impl RI> {
         //println!("CLAMP {}", clamp);
         RatingIterator::<_> {
             start: self.start,
             iter: self.iter.map(move |rating_segment| {
                 /*if rating_segment.end_point >= clamp {
-                    println!("CLAMPED {} to {} (prev {})", rating_segment.end_point, clamp, last_start);
+                    println!("CLAMPED {} to {} {:#?}", rating_segment.end_point, clamp, rating_segment.data);
                 }*/
                 RatingSegment {
                     end_point: min(rating_segment.end_point, clamp),
                     data: rating_segment.data,
                 }
             }),
+        }
+    }
+}
+
+struct ExtendToIterator<T, I>
+where
+    I: SI<T>,
+{
+    input_iter: I,
+    data_to_extend: Option<T>,
+    end_point: Point,
+}
+
+impl<T, I: SI<T>> Iterator for ExtendToIterator<T, I> {
+    type Item = Segment<T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Segment<T>> {
+        match self.input_iter.next() {
+            Some(s) => {
+                assert!(s.end_point <= self.end_point);
+                if s.end_point == self.end_point {
+                    self.data_to_extend.take();
+                }
+                Some(s)
+            }
+            None => match self.data_to_extend.take() {
+                Some(s) => Some(Segment {
+                    end_point: self.end_point,
+                    data: s,
+                }),
+                None => None,
+            },
         }
     }
 }
@@ -761,15 +876,15 @@ where
 
     current_best_rating: Rating,
 
-    /// The start timepoint of the position, which has the maximum rating
-    current_best_timepoint: TimePoint,
+    /// The start timepoint of the offset, which has the maximum rating
+    current_best_timepoint: Point,
 
     stored_segment: Option<DualFullSegment>,
 }
 
 impl<I: DFI> LeftToRightMaximumIterator<I> {
     #[inline]
-    fn new(i: I, start: TimePoint) -> LeftToRightMaximumIterator<I> {
+    fn new(i: I, start: Point) -> LeftToRightMaximumIterator<I> {
         LeftToRightMaximumIterator::<I> {
             input_iter: i,
             current_best_rating: Rating::zero(),
@@ -782,12 +897,12 @@ impl<I: DFI> LeftToRightMaximumIterator<I> {
     fn constant_dual_info(&self) -> DualInfo {
         DualInfo {
             rating_info: RatingInfo::constant(self.current_best_rating),
-            position_info: PositionInfo::constant(self.current_best_timepoint),
+            offset_info: OffsetInfo::constant(self.current_best_timepoint),
         }
     }
 
     #[inline]
-    fn constant_segment(&self, span: TimeSpan) -> DualFullSegment {
+    fn constant_segment(&self, span: PointSpan) -> DualFullSegment {
         DualFullSegment {
             span: span,
             data: self.constant_dual_info(),
@@ -816,20 +931,20 @@ impl<I: DFI> Iterator for LeftToRightMaximumIterator<I> {
         let segment_start_rating = segment.start_rating();
         let segment_end_rating = segment.end_rating();
 
-        let start_position = segment.data.position_info.position;
-        let end_position = segment.data.position_info.end_position(segment.span.len());
+        let start_offset = segment.data.offset_info.offset;
+        let end_offset = segment.data.offset_info.end_offset(segment.span.len());
 
         if segment_start_rating <= self.current_best_rating && segment_end_rating <= self.current_best_rating {
             return Some(self.constant_segment(segment.span));
         } else if segment_start_rating >= self.current_best_rating {
             if segment_start_rating >= segment_end_rating {
                 self.current_best_rating = segment_start_rating;
-                self.current_best_timepoint = start_position;
+                self.current_best_timepoint = start_offset;
 
                 return Some(self.constant_segment(segment.span));
             } else {
                 self.current_best_rating = segment_end_rating;
-                self.current_best_timepoint = end_position;
+                self.current_best_timepoint = end_offset;
 
                 return Some(segment);
             }
@@ -850,22 +965,25 @@ impl<I: DFI> Iterator for LeftToRightMaximumIterator<I> {
             assert!(segment_start_rating < self.current_best_rating);
             assert!(segment_end_rating > self.current_best_rating);
 
-            let switch_i64 = (self.current_best_rating - segment_start_rating) / segment.data.rating_info.delta + 1;
+            let switch_i64 = RatingDelta::div_by_delta_to_i64(
+                self.current_best_rating - segment_start_rating,
+                segment.data.rating_info.delta,
+            ) + 1;
             assert!(0 < switch_i64);
             assert!(switch_i64 < segment.span.len().as_i64());
 
             let switch_timedelta = TimeDelta::from_i64(switch_i64);
 
             let segment1 = DualFullSegment {
-                span: TimeSpan::new(segment.span.start, segment.span.start + switch_timedelta),
+                span: PointSpan::new(segment.span.start, segment.span.start + switch_timedelta),
                 data: self.constant_dual_info(),
             };
 
             self.current_best_rating = segment_end_rating;
-            self.current_best_timepoint = end_position;
+            self.current_best_timepoint = end_offset;
 
             let segment2 = DualFullSegment {
-                span: TimeSpan::new(segment.span.start + switch_timedelta, segment.span.end),
+                span: PointSpan::new(segment.span.start + switch_timedelta, segment.span.end),
                 data: segment.data.advanced(switch_timedelta),
             };
 
@@ -876,48 +994,53 @@ impl<I: DFI> Iterator for LeftToRightMaximumIterator<I> {
 }
 
 #[derive(Debug)]
-pub struct PositionBuffer {
-    start: TimePoint,
-    buffer: Vec<PositionSegment>,
+pub struct OffsetBuffer {
+    start: Point,
+    buffer: Vec<OffsetSegment>,
 }
 
-impl PositionBuffer {
+impl OffsetBuffer {
     #[inline]
-    pub fn into_iter(self) -> PositionIterator<impl PI> {
-        PositionIterator::<_> {
+    pub fn into_iter(self) -> OffsetIterator<impl PI> {
+        OffsetIterator::<_> {
             start: self.start,
             iter: self.buffer.into_iter(),
         }
     }
 
     #[inline]
-    pub fn iter(&self) -> PositionIterator<std::iter::Cloned<impl Iterator<Item = &PositionSegment>>> {
-        PositionIterator::<_> {
+    pub fn iter(&self) -> OffsetIterator<std::iter::Cloned<impl Iterator<Item = &OffsetSegment>>> {
+        OffsetIterator::<_> {
             start: self.start,
             iter: self.buffer.iter().cloned(),
         }
     }
 
     #[inline]
-    pub fn end_point(&self) -> Option<TimePoint> {
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    #[inline]
+    pub fn end_point(&self) -> Option<Point> {
         self.buffer.last().map(|rating_segment| rating_segment.end_point)
     }
 
     #[inline]
-    pub fn end(&self) -> Option<TimePoint> {
+    pub fn end(&self) -> Option<Point> {
         self.buffer.last().map(|rating_segment| rating_segment.end_point)
     }
 
     #[inline]
-    pub fn start(&self) -> TimePoint {
+    pub fn start(&self) -> Point {
         self.start
     }
 
     #[inline]
-    pub fn end_position(&self) -> TimePoint {
+    pub fn end_offset(&self) -> Offset {
         assert!(self.buffer.len() > 0);
 
-        let segment_start: TimePoint;
+        let segment_start: Point;
         if self.buffer.len() == 1 {
             segment_start = self.start;
         } else {
@@ -925,17 +1048,17 @@ impl PositionBuffer {
         }
 
         let last_segment = *self.buffer.last().unwrap();
-        last_segment.data.end_position(last_segment.end_point - segment_start)
+        last_segment.data.end_offset(last_segment.end_point - segment_start)
     }
 
     #[inline]
-    pub fn get_at(&self, t: TimePoint) -> TimePoint {
+    pub fn get_offset_at(&self, t: Point) -> Offset {
         assert!(t >= self.start && t < self.end_point().unwrap());
         let mut segment_start = self.start;
 
         for segment in &self.buffer {
             if t >= segment_start && t < segment.end_point {
-                return segment.data.advanced_position(t - segment_start);
+                return segment.data.advanced_offset(t - segment_start);
             }
             segment_start = segment.end_point;
         }
@@ -943,19 +1066,19 @@ impl PositionBuffer {
         unreachable!()
     }
 
-    #[inline]
-    pub fn maximum(&self) -> TimePoint {
-        let state: (TimePoint, TimePoint) = (self.buffer.first().unwrap().start_position(), self.start);
+    /*#[inline]
+    pub fn maximum(&self) -> Point {
+        let state: (Offset, Point) = (self.buffer.first().unwrap().start_offset(), self.start);
 
         self.buffer
             .iter()
             .fold(
                 state,
                 #[inline]
-                |(current_max, segment_start): (TimePoint, TimePoint), segment: &PositionSegment| {
+                |(current_max, segment_start): (Offset, Point), segment: &OffsetSegment| {
                     assert!(segment_start < segment.end_point);
-                    let start_rating: TimePoint = segment.start_position();
-                    let end_rating: TimePoint = segment.end_position(segment.end_point - segment_start);
+                    let start_rating: TimePoint = segment.start_offset();
+                    let end_rating: TimePoint = segment.end_offset(segment.end_point - segment_start);
 
                     let new_max = max(max(current_max, start_rating), end_rating);
 
@@ -966,18 +1089,18 @@ impl PositionBuffer {
     }
 
     #[inline]
-    pub fn minimum(&self) -> TimePoint {
-        let state: (TimePoint, TimePoint) = (self.buffer.first().unwrap().start_position(), self.start);
+    pub fn minimum(&self) -> Point {
+        let state: (TimePoint, TimePoint) = (self.buffer.first().unwrap().start_offset(), self.start);
 
         self.buffer
             .iter()
             .fold(
                 state,
                 #[inline]
-                |(current_max, segment_start): (TimePoint, TimePoint), segment: &PositionSegment| {
+                |(current_max, segment_start): (TimePoint, TimePoint), segment: &OffsetSegment| {
                     assert!(segment_start < segment.end_point);
-                    let start_rating: TimePoint = segment.start_position();
-                    let end_rating: TimePoint = segment.end_position(segment.end_point - segment_start);
+                    let start_rating: TimePoint = segment.start_offset();
+                    let end_rating: TimePoint = segment.end_offset(segment.end_point - segment_start);
 
                     let new_max = min(min(current_max, start_rating), end_rating);
 
@@ -985,12 +1108,12 @@ impl PositionBuffer {
                 },
             )
             .0
-    }
+    }*/
 }
 
 #[derive(Debug)]
 pub struct DualBuffer {
-    pub start: TimePoint,
+    pub start: Point,
     pub buffer: Vec<DualSegment>,
 }
 
@@ -1015,7 +1138,7 @@ impl DualBuffer {
 #[derive(Debug)]
 pub struct SeparateDualBuffer {
     pub rating_buffer: RatingBuffer,
-    pub position_buffer: PositionBuffer,
+    pub offset_buffer: OffsetBuffer,
 }
 
 pub type DualFullSegmentIterator<I> = FullSegmentIterator<DualInfo, I>; // TODO: rename to DualFullIterator
@@ -1035,7 +1158,7 @@ where
     I2: DI,
 {
     stored_segment: Option<DualFullSegment>,
-    segment_start: TimePoint,
+    segment_start: Point,
     dual_seg1: DualSegment,
     dual_seg2: DualSegment,
     input_iter1: I1,
@@ -1045,7 +1168,7 @@ where
 
 impl<I1: DI, I2: DI> CombinedMaximumDualIterator<I1, I2> {
     #[inline]
-    fn generate_maximum_segments(&mut self, len: TimeDelta, segment_end: TimePoint) -> DualFullSegment {
+    fn generate_maximum_segments(&mut self, len: TimeDelta, segment_end: Point) -> DualFullSegment {
         let start_rating1 = self.dual_seg1.data.rating_info.rating;
         let start_rating2 = self.dual_seg2.data.rating_info.rating;
         let end_rating1 = self.dual_seg1.data.rating_info.end_rating(len);
@@ -1058,20 +1181,20 @@ impl<I1: DI, I2: DI> CombinedMaximumDualIterator<I1, I2> {
             // first segment is better
 
             DualFullSegment {
-                span: TimeSpan::new(self.segment_start, segment_end),
+                span: PointSpan::new(self.segment_start, segment_end),
                 data: self.dual_seg1.data.clone(),
             }
         } else if start_rating1 <= start_rating2 && end_rating1 <= end_rating2 {
             // second segment is better
 
             DualFullSegment {
-                span: TimeSpan::new(self.segment_start, segment_end),
+                span: PointSpan::new(self.segment_start, segment_end),
                 data: self.dual_seg2.data.clone(),
             }
         } else {
             // segments switch somewhere in this segment
 
-            // spoint is the first position where the second better segment is better
+            // spoint is the first offset where the second better segment is better
             let spoint = Self::get_switch_point(start_rating1, start_rating2, delta1, delta2);
             assert!(0 < spoint);
             assert!(spoint < len.as_i64());
@@ -1085,22 +1208,22 @@ impl<I1: DI, I2: DI> CombinedMaximumDualIterator<I1, I2> {
                 // first segment starts above second segment
 
                 segment1 = DualFullSegment {
-                    span: TimeSpan::new(self.segment_start, self.segment_start + spoint_delta),
+                    span: PointSpan::new(self.segment_start, self.segment_start + spoint_delta),
                     data: self.dual_seg1.data.clone(),
                 };
                 segment2 = DualFullSegment {
-                    span: TimeSpan::new(self.segment_start + spoint_delta, segment_end),
+                    span: PointSpan::new(self.segment_start + spoint_delta, segment_end),
                     data: self.dual_seg2.data.clone().advanced(spoint_delta),
                 };
             } else {
                 // second segment starts above first segment
 
                 segment1 = DualFullSegment {
-                    span: TimeSpan::new(self.segment_start, self.segment_start + spoint_delta),
+                    span: PointSpan::new(self.segment_start, self.segment_start + spoint_delta),
                     data: self.dual_seg2.data.clone(),
                 };
                 segment2 = DualFullSegment {
-                    span: TimeSpan::new(self.segment_start + spoint_delta, segment_end),
+                    span: PointSpan::new(self.segment_start + spoint_delta, segment_end),
                     data: self.dual_seg1.data.clone().advanced(spoint_delta),
                 }
             }
@@ -1120,7 +1243,7 @@ impl<I1: DI, I2: DI> CombinedMaximumDualIterator<I1, I2> {
         // solving for x:
         //
         // x = (start_rating2 - start_rating1) / (delta1 - delta2)
-        (start_rating2 - start_rating1) / (delta1 - delta2) + 1
+        RatingDelta::div_by_delta_to_i64(start_rating2 - start_rating1, delta1 - delta2) + 1
     }
 }
 
@@ -1239,9 +1362,9 @@ pub fn combined_maximum_of_dual_iterators<I1: DI, I2: DI>(
 pub type RatingFullIterator<I> = FullSegmentIterator<RatingInfo, I>;
 impl<I: RFI> RatingFullIterator<I> {
     #[inline]
-    pub fn annotate_with_position_info(
+    pub fn annotate_with_offset_info(
         self,
-        position_generate: impl Fn(/* segment_start */ TimePoint) -> TimePoint,
+        offset_generate: impl Fn(/* segment_start */ Point) -> Offset,
     ) -> DualFullSegmentIterator<impl DFI> {
         DualFullSegmentIterator::<_> {
             start: self.start,
@@ -1251,8 +1374,8 @@ impl<I: RFI> RatingFullIterator<I> {
                     span: rating_full_segment.span,
                     data: DualInfo {
                         rating_info: rating_full_segment.data,
-                        position_info: PositionInfo {
-                            position: position_generate(rating_full_segment.span.start),
+                        offset_info: OffsetInfo {
+                            offset: offset_generate(rating_full_segment.span.start),
                             drag: true,
                         },
                     },
@@ -1262,7 +1385,7 @@ impl<I: RFI> RatingFullIterator<I> {
     }
 }
 
-#[inline]
+/*#[inline]
 pub fn zero_rating_iterator(start: TimePoint, end: TimePoint) -> RatingIterator<impl RI> {
     RatingIterator::<_> {
         start: start,
@@ -1274,7 +1397,7 @@ pub fn zero_rating_iterator(start: TimePoint, end: TimePoint) -> RatingIterator<
             },
         }),
     }
-}
+}*/
 
 impl RatingFullSegment {
     #[inline]
@@ -1293,12 +1416,14 @@ impl RatingFullSegment {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+
 struct RatingAdderIterator<I1, I2>
 where
     I1: RI,
     I2: RI,
 {
-    segment_start: TimePoint,
+    segment_start: Point,
     dual_seg1: RatingSegment,
     dual_seg2: RatingSegment,
     input_iter1: I1,
@@ -1308,7 +1433,7 @@ where
 
 impl<I1: RI, I2: RI> RatingAdderIterator<I1, I2> {
     #[inline]
-    fn generate_segment(&mut self, segment_end: TimePoint) -> RatingFullSegment {
+    fn generate_segment(&mut self, segment_end: Point) -> RatingFullSegment {
         let start_rating1 = self.dual_seg1.data.rating;
         let start_rating2 = self.dual_seg2.data.rating;
 
@@ -1321,7 +1446,7 @@ impl<I1: RI, I2: RI> RatingAdderIterator<I1, I2> {
         );*/
 
         RatingFullSegment {
-            span: TimeSpan::new(self.segment_start, segment_end),
+            span: PointSpan::new(self.segment_start, segment_end),
             data: RatingInfo {
                 rating: start_rating1 + start_rating2,
                 delta: delta1 + delta2,
@@ -1407,13 +1532,12 @@ impl<I1: RI, I2: RI> Iterator for RatingAdderIterator<I1, I2> {
     }
 }
 
-pub fn add_rating_iterators(
+/*pub fn add_rating_iterators(
     mut iter1: RatingIterator<impl RI>,
     mut iter2: RatingIterator<impl RI>,
 ) -> RatingFullIterator<impl RFI> {
     assert!(iter1.start == iter2.start);
     let start = iter1.start;
-
     //println!("ADDER segment start {}", start);
 
     let dual_seg1 = iter1
@@ -1436,7 +1560,128 @@ pub fn add_rating_iterators(
             finished: false,
         },
     }
+}*/
+
+// ----------------------------------------------------------------------------------------------------
+
+struct RatingAdderIterator2<I1, I2>
+where
+    I1: DI,
+    I2: RI,
+{
+    segment_start: Point,
+    dual_seg1: DualSegment,
+    dual_seg2: RatingSegment,
+    input_iter1: I1,
+    input_iter2: I2,
+    finished: bool,
 }
+
+impl<I1: DI, I2: RI> RatingAdderIterator2<I1, I2> {
+    #[inline]
+    fn generate_segment(&mut self, segment_end: Point) -> DualFullSegment {
+        let start_rating1 = self.dual_seg1.data.rating_info.rating;
+        let start_rating2 = self.dual_seg2.data.rating;
+
+        let delta1 = self.dual_seg1.data.rating_info.delta;
+        let delta2 = self.dual_seg2.data.delta;
+
+        /*println!(
+            "ADDER new segment {} to {}",
+            self.segment_start, segment_end
+        );*/
+
+        DualFullSegment {
+            span: PointSpan::new(self.segment_start, segment_end),
+            data: DualInfo {
+                rating_info: RatingInfo {
+                    rating: start_rating1 + start_rating2,
+                    delta: delta1 + delta2,
+                },
+                offset_info: self.dual_seg1.data.offset_info,
+            },
+        }
+    }
+}
+
+impl<I1: DI, I2: RI> Iterator for RatingAdderIterator2<I1, I2> {
+    type Item = DualFullSegment;
+
+    #[inline]
+    fn next(&mut self) -> Option<DualFullSegment> {
+        if self.finished {
+            return None;
+        }
+
+        let len;
+        let result: DualFullSegment;
+
+        /*println!(
+            "ADDER start: {} ep1: {} ep2: {}",
+            self.segment_start, self.dual_seg1.end_point, self.dual_seg2.end_point
+        );*/
+
+        if self.dual_seg1.end_point < self.dual_seg2.end_point {
+            len = self.dual_seg1.end_point - self.segment_start;
+
+            result = self.generate_segment(self.dual_seg1.end_point);
+
+            self.segment_start = self.dual_seg1.end_point;
+
+            self.dual_seg1 = self
+                .input_iter1
+                .next()
+                .expect("RatingAdderIterator: First iterator ended before second");
+            self.dual_seg2.advance(len);
+        } else if self.dual_seg2.end_point < self.dual_seg1.end_point {
+            len = self.dual_seg2.end_point - self.segment_start;
+
+            result = self.generate_segment(self.dual_seg2.end_point);
+
+            self.segment_start = self.dual_seg2.end_point;
+
+            self.dual_seg1.advance(len);
+            self.dual_seg2 = self
+                .input_iter2
+                .next()
+                .expect("RatingAdderIterator: Second iterator ended before first");
+        } else {
+            // self.dual_seg2.end_point === self.dual_seg1.end_point
+
+            match (self.input_iter1.next(), self.input_iter2.next()) {
+                (Some(dual_seg1), Some(dual_seg2)) => {
+                    result = self.generate_segment(self.dual_seg1.end_point);
+
+                    self.segment_start = self.dual_seg1.end_point;
+
+                    self.dual_seg1 = dual_seg1;
+                    self.dual_seg2 = dual_seg2;
+                }
+                (Some(new_dual_seg1), None) => {
+                    panic!(
+                        "RatingAdderIterator: Second iterator ended before first {}",
+                        new_dual_seg1.end_point
+                    );
+                }
+                (None, Some(new_dual_seg2)) => {
+                    panic!(
+                        "RatingAdderIterator: First iterator ended before second {}",
+                        new_dual_seg2.end_point
+                    );
+                }
+                (None, None) => {
+                    result = self.generate_segment(self.dual_seg1.end_point);
+
+                    self.finished = true;
+                }
+            }
+        }
+
+        Some(result)
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------
 
 trait PushIterator {
     type Item;
@@ -1452,14 +1697,59 @@ trait PushIterator {
 
 // //////////////////////////////////////////////////////////////////////////////////////////////////
 
+/*#[derive(Clone, Copy, PartialEq, Eq)]
+enum RatingDivPointDiff {
+    Real {
+        delta: RatingDelta,
+        diff: PointDiff
+    },
+    PInf,
+    NInf
+}
+
+impl RatingDivPointDiff {
+    fn div(delta: RatingDelta, diff: PointDiff) -> RatingDivPointDiff {
+        assert!(diff.as_i64() > 0);
+        RatingDivPointDiff::Real {
+            delta,
+            diff
+        }
+    }
+}
+
+type Interval = (RatingDivPointDiff, RatingDivPointDiff);
+
+impl Ord for RatingDivPointDiff {
+    fn cmp(&self, other: &RatingDivPointDiff) -> std::cmp::Ordering {
+        match (self, other) {
+            (RatingDivPointDiff::PInf, RatingDivPointDiff::NInf) => std::cmp::Ordering::Greater,
+            (RatingDivPointDiff::NInf, RatingDivPointDiff::PInf) => std::cmp::Ordering::Less,
+            (RatingDivPointDiff::NInf, RatingDivPointDiff::Real {..}) => std::cmp::Ordering::Less,
+            (RatingDivPointDiff::PInf, RatingDivPointDiff::Real {..}) => std::cmp::Ordering::Greater,
+            (RatingDivPointDiff::Real {..}, RatingDivPointDiff::NInf) => std::cmp::Ordering::Greater,
+            (RatingDivPointDiff::Real {..}, RatingDivPointDiff::PInf) => std::cmp::Ordering::Less,
+            (RatingDivPointDiff::Real {  }, RatingDivPointDiff::PInf) => std::cmp::Ordering::Less,
+            (self.delta * other.diff.as_i64()).cmp(&(other.delta * self.diff.as_i64()))
+        }
+    }
+
+impl PartialOrd for RatingDivPointDiff {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+}*/
+
+type Interval = (f64, f64);
+
 struct AggressiveSimplifySegmentData {
     seg: RatingFullSegment,
-    offset_interval: (RatingDelta, RatingDelta),
-    pivot: TimePoint,
+    offset_interval: Interval,
+    pivot: Point,
 }
 
 struct AggressiveSimplifyRatingPushIterator<I: PushIterator<Item = RatingFullSegment>> {
-    start: TimePoint,
+    start: Point,
     epsilon: RatingDelta,
     current_segment: Option<AggressiveSimplifySegmentData>,
     iter: I,
@@ -1468,17 +1758,24 @@ struct AggressiveSimplifyRatingPushIterator<I: PushIterator<Item = RatingFullSeg
 impl<I: PushIterator<Item = RatingFullSegment>> AggressiveSimplifyRatingPushIterator<I> {
     fn get_min_max_offset_for_target(
         target_rating: Rating,
-        target: TimePoint,
+        target: Point,
         pivot_rating: Rating,
-        pivot: TimePoint,
+        pivot: Point,
         max_diff: RatingDelta,
-    ) -> (RatingDelta, RatingDelta) {
-        if target == pivot {
-            return (-max_diff, max_diff);
-        } // TODO: this works buy actually we want -inf and +inf
+    ) -> Interval {
+        use std::f64;
 
-        let min_delta = (target_rating - max_diff - pivot_rating) / (target - pivot).as_i64(); // BUG TODO: ROUND UP
-        let max_delta = (target_rating + max_diff - pivot_rating) / (target - pivot).as_i64();
+        if target == pivot {
+            return (f64::NEG_INFINITY, f64::INFINITY);
+        }
+
+        let x_div: f64 = 1.0 / (target - pivot).as_f64();
+
+        let min_delta = (target_rating - pivot_rating - max_diff) as f64 * x_div;
+        //RatingDelta::div_by_i64_to_delta(target_rating - pivot_rating - max_diff, (target - pivot).as_i64()); // BUG TODO: ROUND UP
+        let max_delta = (target_rating - pivot_rating + max_diff) as f64 * x_div;
+        //RatingDelta::div_by_i64_to_delta(target_rating - pivot_rating - max_diff, (target - pivot).as_i64()); // BUG TODO: ROUND UP
+        //   RatingDelta::div_by_i64_to_delta(target_rating - pivot_rating + max_diff, (target - pivot).as_i64());
 
         if min_delta <= max_delta {
             (min_delta, max_delta)
@@ -1490,9 +1787,9 @@ impl<I: PushIterator<Item = RatingFullSegment>> AggressiveSimplifyRatingPushIter
     fn get_min_max_offset_for_segment(
         seg: RatingFullSegment,
         pivot_rating: Rating,
-        pivot: TimePoint,
+        pivot: Point,
         max_diff: RatingDelta,
-    ) -> (RatingDelta, RatingDelta) {
+    ) -> Interval {
         let interval1 =
             Self::get_min_max_offset_for_target(seg.data.start_rating(), seg.span.start, pivot_rating, pivot, max_diff);
         let interval2 = Self::get_min_max_offset_for_target(
@@ -1506,8 +1803,8 @@ impl<I: PushIterator<Item = RatingFullSegment>> AggressiveSimplifyRatingPushIter
         return Self::intersect_intervals(interval1, interval2);
     }
 
-    fn intersect_intervals(a: (RatingDelta, RatingDelta), b: (RatingDelta, RatingDelta)) -> (RatingDelta, RatingDelta) {
-        return (max(a.0, b.0), min(a.1, b.1));
+    fn intersect_intervals(a: Interval, b: Interval) -> Interval {
+        return (f64::max(a.0, b.0), f64::min(a.1, b.1));
     }
 
     fn create_segment(&self, seg: RatingFullSegment) -> AggressiveSimplifySegmentData {
@@ -1557,7 +1854,7 @@ impl<I: PushIterator<Item = RatingFullSegment>> PushIterator for AggressiveSimpl
         let next_interval = Self::intersect_intervals(current_segment.offset_interval, interval);
 
         if next_interval.0 <= next_interval.1 {
-            let new_delta = (next_interval.0 + next_interval.1) / 2;
+            let new_delta = ((next_interval.0 + next_interval.1) / 2.) as i64;
             let new_start_rating = Rating::add_mul(pivot_rating, new_delta, -pivot_diff);
 
             //println!("len1 {} len2 {} min {} max {} delta {} new delta {}", current_segment.seg.span.len(), seg.span.len(), next_interval.0.as_readable_f32(), next_interval.1.as_readable_f32(), current_segment.seg.data.delta.as_readable_f32(), new_delta.as_readable_f32());
@@ -1578,7 +1875,7 @@ impl<I: PushIterator<Item = RatingFullSegment>> PushIterator for AggressiveSimpl
 }
 
 fn aggressive_simplifiy_ratings_push_iter<I>(
-    start: TimePoint,
+    start: Point,
     epsilon: RatingDelta,
     iter: I,
 ) -> impl PushIterator<Item = RatingSegment, Output = I::Output>
@@ -1595,14 +1892,14 @@ where
 
 // //////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct SimplifyPositionPushIterator<I: PushIterator<Item = PositionFullSegment>> {
-    start: TimePoint,
-    current_segment: Option<PositionFullSegment>,
+struct SimplifyOffsetPushIterator<I: PushIterator<Item = OffsetFullSegment>> {
+    start: Point,
+    current_segment: Option<OffsetFullSegment>,
     iter: I,
 }
 
-impl<I: PushIterator<Item = PositionFullSegment>> PushIterator for SimplifyPositionPushIterator<I> {
-    type Item = PositionSegment;
+impl<I: PushIterator<Item = OffsetFullSegment>> PushIterator for SimplifyOffsetPushIterator<I> {
+    type Item = OffsetSegment;
     type Output = I::Output;
 
     #[inline]
@@ -1614,8 +1911,8 @@ impl<I: PushIterator<Item = PositionFullSegment>> PushIterator for SimplifyPosit
     }
 
     #[inline]
-    fn push(&mut self, next_segment: PositionSegment) {
-        let mut current_segment: PositionFullSegment;
+    fn push(&mut self, next_segment: OffsetSegment) {
+        let mut current_segment: OffsetFullSegment;
 
         match self.current_segment {
             None => {
@@ -1626,7 +1923,7 @@ impl<I: PushIterator<Item = PositionFullSegment>> PushIterator for SimplifyPosit
         }
 
         if current_segment.data.drag == next_segment.data.drag
-            && current_segment.exclusive_end_position() == next_segment.data.start_position()
+            && current_segment.exclusive_end_offset() == next_segment.data.start_offset()
         {
             current_segment.span.end = next_segment.end_point;
         } else {
@@ -1640,14 +1937,11 @@ impl<I: PushIterator<Item = PositionFullSegment>> PushIterator for SimplifyPosit
 }
 
 #[inline]
-fn simplifiy_positions_push_iter<I>(
-    start: TimePoint,
-    iter: I,
-) -> impl PushIterator<Item = PositionSegment, Output = I::Output>
+fn simplifiy_offsets_push_iter<I>(start: Point, iter: I) -> impl PushIterator<Item = OffsetSegment, Output = I::Output>
 where
-    I: PushIterator<Item = PositionFullSegment>,
+    I: PushIterator<Item = OffsetFullSegment>,
 {
-    SimplifyPositionPushIterator {
+    SimplifyOffsetPushIterator {
         current_segment: None,
         start: start,
         iter: iter,
@@ -1657,7 +1951,7 @@ where
 // //////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct SimplifyRatingPushIterator<I: PushIterator<Item = RatingFullSegment>> {
-    start: TimePoint,
+    start: Point,
     current_segment: Option<RatingFullSegment>,
     iter: I,
 }
@@ -1699,10 +1993,7 @@ impl<I: PushIterator<Item = RatingFullSegment>> PushIterator for SimplifyRatingP
     }
 }
 
-fn simplifiy_ratings_push_iter<I>(
-    start: TimePoint,
-    iter: I,
-) -> impl PushIterator<Item = RatingSegment, Output = I::Output>
+fn simplifiy_ratings_push_iter<I>(start: Point, iter: I) -> impl PushIterator<Item = RatingSegment, Output = I::Output>
 where
     I: PushIterator<Item = RatingFullSegment>,
 {
@@ -1833,11 +2124,11 @@ where
     map_push_iterator(iter, |dual_segment: DualSegment| dual_segment.as_rating_segment())
 }
 
-fn only_positions_push_iter<I>(iter: I) -> impl PushIterator<Item = DualSegment, Output = I::Output>
+fn only_offsets_push_iter<I>(iter: I) -> impl PushIterator<Item = DualSegment, Output = I::Output>
 where
-    I: PushIterator<Item = PositionSegment>,
+    I: PushIterator<Item = OffsetSegment>,
 {
-    map_push_iterator(iter, |dual_segment: DualSegment| dual_segment.as_position_segment())
+    map_push_iterator(iter, |dual_segment: DualSegment| dual_segment.as_offset_segment())
 }
 
 fn collect_to_vec_push_iter<T>() -> impl PushIterator<Item = T, Output = Vec<T>> {
@@ -1884,8 +2175,8 @@ impl<I: DI> Iterator for DualSimplifyIterator<I> {
                 }
                 Some(next_segment) => {
                     if next_segment.data.rating_info.delta == current_segment.data.rating_info.delta
-                        && next_segment.data.position_info.drag == current_segment.data.position_info.drag
-                        && current_segment.exclusive_end_position() == next_segment.start_position()
+                        && next_segment.data.offset_info.drag == current_segment.data.offset_info.drag
+                        && current_segment.exclusive_end_offset() == next_segment.start_offset()
                         && current_segment.exclusive_end_rating() == next_segment.start_rating()
                     {
                         current_segment.span.end = next_segment.end_point;

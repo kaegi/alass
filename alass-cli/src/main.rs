@@ -28,7 +28,7 @@ extern crate subparse;
 
 use crate::subparse::SubtitleFileInterface;
 
-use alass_core::{align, Statistics, TimeDelta as AlgTimeDelta};
+use alass_core::{align, TimeDelta as AlgTimeDelta};
 use clap::{App, Arg};
 use encoding_rs::Encoding;
 use encoding_rs::UTF_8;
@@ -84,7 +84,8 @@ pub fn get_encoding(opt: Option<&str>) -> &'static Encoding {
         Some(label) => {
             match Encoding::for_label(label.as_bytes()) {
                 None => {
-                    panic!("{} is not a known encoding label; exiting.", label); // TODO: error handling
+                    panic!("{} is not a known encoding label; exiting.", label);
+                    // TODO: error handling
                 }
                 Some(encoding) => encoding,
             }
@@ -99,9 +100,6 @@ struct Arguments {
     incorrect_file_path: PathBuf,
     output_file_path: PathBuf,
 
-    statistics_folder_path_opt: Option<PathBuf>,
-    statistics_required_tags: Vec<String>,
-
     interval: i64,
 
     split_penalty: f64,
@@ -113,6 +111,7 @@ struct Arguments {
     encoding_ref: &'static Encoding,
     encoding_inc: &'static Encoding,
 
+    guess_fps_ratio: bool,
     no_split_mode: bool,
     speed_optimization: Option<f64>,
 }
@@ -135,7 +134,7 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
             .long("split-penalty")
             .value_name("floating point number from 0 to 1000")
             .help("Determines how eager the algorithm is to avoid splitting of the subtitles. 1000 means that all lines will be shifted by the same offset, while 0.01 will produce MANY segments with different offsets. Values from 1 to 20 are the most useful.")
-            .default_value("4"))
+            .default_value("7"))
         .arg(Arg::with_name("interval")
             .short("i")
             .long("interval")
@@ -164,18 +163,11 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
             .long("encoding-inc")
             .value_name("encoding")
             .help("Charset encoding of the incorrect subtitle file."))
-        .arg(Arg::with_name("statistics-path")
-            .long("statistics-path")
-            .short("s")
-            .value_name("path")
-            .help("enable statistics and put files in the specified folder")
-            .required(false)
-            )
         .arg(Arg::with_name("speed-optimization")
             .long("speed-optimization")
             .short("O")
             .value_name("path")
-            .default_value("2")
+            .default_value("1")
             .help("(greatly) speeds up synchronization by sacrificing some accuracy; set to 0 to disable speed optimization")
             .required(false)
             )
@@ -191,18 +183,18 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
             .short("l")
             .long("no-split")
         )
+        .arg(Arg::with_name("disable-fps-guessing")
+            .help("disables guessing and correcting of framerate differences between reference file and input file")
+            .short("g")
+            .long("disable-fps-guessing")
+            .alias("disable-framerate-guessing")
+        )
         .after_help("This program works with .srt, .ass/.ssa, .idx and .sub files. The corrected file will have the same format as the incorrect file.")
         .get_matches();
 
     let reference_file_path: PathBuf = matches.value_of("reference-file").unwrap().into();
     let incorrect_file_path: PathBuf = matches.value_of("incorrect-sub-file").unwrap().into();
     let output_file_path: PathBuf = matches.value_of("output-file-path").unwrap().into();
-
-    let statistics_folder_path_opt: Option<PathBuf> = matches.value_of("statistics-path").map(|v| PathBuf::from(v));
-    let statistics_required_tags: Vec<String> = matches
-        .values_of("statistics-required-tag")
-        .map(|iter| iter.map(|s| s.to_string()).collect::<Vec<_>>())
-        .unwrap_or_else(|| Vec::new());
 
     let interval: i64 = unpack_clap_number_i64(&matches, "interval")?;
     if interval < 1 {
@@ -239,8 +231,6 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
         reference_file_path,
         incorrect_file_path,
         output_file_path,
-        statistics_folder_path_opt,
-        statistics_required_tags,
         interval,
         split_penalty,
         sub_fps_ref: unpack_clap_number_f64(&matches, "sub-fps-ref")?,
@@ -249,6 +239,7 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
         encoding_ref: get_encoding(matches.value_of("encoding-ref")),
         encoding_inc: get_encoding(matches.value_of("encoding-inc")),
         no_split_mode,
+        guess_fps_ratio: !matches.is_present("disable-fps-guessing"),
         speed_optimization: if speed_optimization <= 0. {
             None
         } else {
@@ -257,11 +248,7 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
     })
 }
 
-// //////////////////////////////////////////////////////////////////////////////////////////////////
-
-fn run() -> Result<(), failure::Error> {
-    let args = parse_args()?;
-
+fn prepare_reference_file(args: &Arguments) -> Result<InputFileHandler, failure::Error> {
     let mut ref_file = InputFileHandler::open(
         &args.reference_file_path,
         args.encoding_ref,
@@ -275,10 +262,19 @@ fn run() -> Result<(), failure::Error> {
         ),
     )?;
 
-    ref_file.filter_video_with_min_span_length_ms(200);
+    ref_file.filter_video_with_min_span_length_ms(500);
+
+    Ok(ref_file)
+}
+
+// //////////////////////////////////////////////////////////////////////////////////////////////////
+
+fn run() -> Result<(), failure::Error> {
+    let args = parse_args()?;
 
     if args.incorrect_file_path.eq(OsStr::new("_")) {
         // DEBUG MODE FOR REFERENCE FILE WAS ACTIVATED
+        let ref_file = prepare_reference_file(&args)?;
 
         println!("input file path was given as '_'");
         println!("the output file is a .srt file only containing timing information from the reference file");
@@ -304,8 +300,11 @@ fn run() -> Result<(), failure::Error> {
         return Ok(());
     }
 
+    // open incorrect file before reference file before so that incorrect-file-not-found-errors are not displayed after the long audio extraction
     let inc_file =
         SubtitleFileHandler::open_sub_file(args.incorrect_file_path.as_path(), args.encoding_inc, args.sub_fps_inc)?;
+
+    let ref_file = prepare_reference_file(&args)?;
 
     let output_file_format = inc_file.file_format();
 
@@ -321,17 +320,39 @@ fn run() -> Result<(), failure::Error> {
         .into());
     }
 
-    let statistics_module_opt: Option<Statistics>;
-    if let Some(statistics_folder_path) = args.statistics_folder_path_opt {
-        statistics_module_opt = Some(Statistics::new(statistics_folder_path, args.statistics_required_tags));
-    } else {
-        statistics_module_opt = None;
-    }
-
-    let inc_aligner_timespans: Vec<alass_core::TimeSpan> =
+    let mut inc_aligner_timespans: Vec<alass_core::TimeSpan> =
         timings_to_alg_timespans(inc_file.timespans(), args.interval);
     let ref_aligner_timespans: Vec<alass_core::TimeSpan> =
         timings_to_alg_timespans(ref_file.timespans(), args.interval);
+
+    let mut fps_scaling_factor = 1.;
+    if args.guess_fps_ratio {
+        let a = 25.;
+        let b = 24.;
+        let c = 23.976;
+        let ratios = [a / b, a / c, b / a, b / c, c / a, c / b];
+        let desc = ["25/24", "25/23.976", "24/25", "24/23.976", "23.976/25", "23.976/24"];
+
+        let (opt_ratio_idx, _) = guess_fps_ratio(
+            &ref_aligner_timespans,
+            &inc_aligner_timespans,
+            &ratios,
+            ProgressInfo::new(1, Some("Guessing framerate ratio...".to_string())),
+        );
+
+        fps_scaling_factor = if let Some(idx) = opt_ratio_idx { ratios[idx] } else { 1. };
+
+        println!(
+            "info: 'reference file FPS/input file FPS' ratio is {}",
+            if let Some(idx) = opt_ratio_idx { desc[idx] } else { "1" }
+        );
+        println!();
+
+        inc_aligner_timespans = inc_aligner_timespans
+            .into_iter()
+            .map(|x| x.scaled(fps_scaling_factor))
+            .collect();
+    }
 
     let align_start_msg = format!(
         "synchronizing '{}' to reference file '{}'...",
@@ -343,22 +364,24 @@ fn run() -> Result<(), failure::Error> {
         let num_inc_timespancs = inc_aligner_timespans.len();
 
         let alg_delta = alass_core::align_nosplit(
-            inc_aligner_timespans,
-            ref_aligner_timespans,
-            Some(Box::new(ProgressInfo::new(1, Some(align_start_msg)))),
-            statistics_module_opt,
-        );
+            &ref_aligner_timespans,
+            &inc_aligner_timespans,
+            alass_core::standard_scoring,
+            ProgressInfo::new(1, Some(align_start_msg)),
+        )
+        .0;
 
         alg_deltas = std::vec::from_elem(alg_delta, num_inc_timespancs);
     } else {
         alg_deltas = align(
-            inc_aligner_timespans,
-            ref_aligner_timespans,
+            &ref_aligner_timespans,
+            &inc_aligner_timespans,
             args.split_penalty,
             args.speed_optimization,
-            Some(Box::new(ProgressInfo::new(1, Some(align_start_msg)))),
-            statistics_module_opt,
-        );
+            alass_core::standard_scoring,
+            ProgressInfo::new(1, Some(align_start_msg)),
+        )
+        .0;
     }
     let deltas = alg_deltas_to_timing_deltas(&alg_deltas, args.interval);
 
@@ -405,11 +428,18 @@ fn run() -> Result<(), failure::Error> {
         println!();
     }
 
+    fn scaled_timespan(ts: TimeSpan, fps_scaling_factor: f64) -> TimeSpan {
+        TimeSpan::new(
+            TimePoint::from_msecs((ts.start.msecs() as f64 * fps_scaling_factor) as i64),
+            TimePoint::from_msecs((ts.end.msecs() as f64 * fps_scaling_factor) as i64),
+        )
+    }
+
     let mut corrected_timespans: Vec<subparse::timetypes::TimeSpan> = inc_file
         .timespans()
         .iter()
         .zip(deltas.iter())
-        .map(|(&timespan, &delta)| timespan + delta)
+        .map(|(&timespan, &delta)| scaled_timespan(timespan, fps_scaling_factor) + delta)
         .collect();
 
     if corrected_timespans.iter().any(|ts| ts.start.is_negative()) {

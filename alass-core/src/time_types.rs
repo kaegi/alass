@@ -179,6 +179,11 @@ impl TimePoint {
         self.0 as f32
     }
 
+    /// Returns a f32 for the given time point.
+    pub fn as_f64(self) -> f64 {
+        self.0 as f64
+    }
+
     /// Returns a i64 for the given time point.
     pub fn as_i64(self) -> i64 {
         self.0 as i64
@@ -318,11 +323,13 @@ impl TimeSpan {
     }
 
     /// Returns the start point of the `TimeSpan`.
+    #[inline(always)]
     pub fn start(self) -> TimePoint {
         self.start
     }
 
     /// Returns the end point of the `TimeSpan`.
+    #[inline(always)]
     pub fn end(self) -> TimePoint {
         self.end
     }
@@ -378,6 +385,13 @@ impl TimeSpan {
         let start_max = max(self.start, other.start);
         let end_min = min(self.end, other.end);
         max(TimeDelta::zero(), end_min - start_max)
+    }
+
+    /// Scale start and end time point to zero by `scaling_factor`.
+    pub fn scaled(self, scaling_factor: f64) -> TimeSpan {
+        let new_start = TimePoint::from((self.start.as_f64() * scaling_factor) as i64);
+        let new_end = TimePoint::from((self.end.as_f64() * scaling_factor) as i64);
+        TimeSpan::new(new_start, new_end)
     }
 
     /// Compares two `TimeSpan`s by their start timepoint.

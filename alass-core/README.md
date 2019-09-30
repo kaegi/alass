@@ -8,7 +8,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-alass-core = "1.0"
+alass-core = "2.0.0"
 ```
 
 The library only contains one function that takes two sequences of time spans and returns the offsets to get the best possible alignment.
