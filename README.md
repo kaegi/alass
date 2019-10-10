@@ -13,7 +13,10 @@ accurate, but also language-agnostic. This means
 you can align subtitles to movies in different
 languages.
 
-`alass` stands for  "Automatic Language-Agnostic Subtitle Synchronization". 
+`alass` stands for  "Automatic Language-Agnostic Subtitle Synchronization". The theory and algorithms
+are documented in my [bachelor's thesis](documentation/thesis.pdf)
+and summarized in my [bachelor's presentation](documentation/slides.pdf).
+
 
 ## Executable for Windows (64-bit)
 
@@ -106,22 +109,6 @@ $ cargo run -- movie.mp4 input.srt output.srt
 ### Configuration
 
 All parameters are shown for `cargo build` can also be used for `cargo install` and `cargo run`.
-
-#### Statistics
-
-You can activate the statistics module inside `alass` using:
-
-```bash
-# Important: you have to be inside `alass-cli`! Otherwise the parameter is ignored.
-$ cargo build --features statistics
-$ cargo run -- --statistics-path ./some/folder
-```
-
-This will create the statistics file in `./some/folder`. You can use `--statistics-required-tag` to only generate statistics.
-
-The statistics module allows you to understand/debug the algorithm better.
-
-**Warning**: Using this configuration slows down the algorithm by 50% or more _even_ if no statistics files are generated.
 
 #### FFmpeg as a library
 
