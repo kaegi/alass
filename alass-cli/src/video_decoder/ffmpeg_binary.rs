@@ -175,6 +175,7 @@ impl VideoDecoderFFmpegBinary {
     /// Samples are pushed in 8kHz mono/single-channel format.
     pub fn decode<T>(
         file_path: impl AsRef<Path>,
+        audio_index: Option<usize>,
         receiver: impl super::AudioReceiver<Output = T>,
         mut progress_handler: impl super::ProgressHandler,
     ) -> Result<T, DecoderError> {
@@ -203,11 +204,17 @@ impl VideoDecoderFFmpegBinary {
                 }
             })?;
 
-        let best_stream_opt: Option<Stream> = metadata
+        let mut audio_streams = metadata
             .streams
             .into_iter()
-            .filter(|s| s.codec_type == CodecType::Audio && s.channels.is_some())
-            .min_by_key(|s| s.channels.unwrap());
+            .filter(|s| s.codec_type == CodecType::Audio && s.channels.is_some());
+
+        let best_stream_opt = match audio_index {
+            None => audio_streams
+                .min_by_key(|s| s.channels.unwrap()),
+            Some(ai) => audio_streams
+                .find(|s| s.index == ai)
+        };
 
         let best_stream: Stream;
         match best_stream_opt {

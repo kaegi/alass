@@ -44,6 +44,7 @@ impl VideoDecoderFFmpegLibrary {
     /// Samples are pushed in 8kHz mono/single-channel format.
     pub(crate) fn decode<T>(
         file_path: impl AsRef<Path>,
+        audio_index: Option<usize>,
         mut receiver: impl super::AudioReceiver<Output = T>,
         mut progress_handler: impl super::ProgressHandler,
     ) -> Result<T, DecoderError> {
@@ -78,6 +79,15 @@ impl VideoDecoderFFmpegLibrary {
             let mut audio_stream_opt: Option<*mut AVStream> = None;
 
             for &stream in streams {
+                // If audio_index is set, ignore the 'least amount of channels' heuristic
+                if let Some(ai) = audio_index {
+                    if ai == (*stream).index {
+                        audio_stream_opt = Some(stream);
+                    } else {
+                        continue
+                    }
+                }
+
                 let local_codec_parameters: *mut AVCodecParameters = (*stream).codecpar;
 
                 if (*local_codec_parameters).codec_type == AVMediaType::AVMEDIA_TYPE_AUDIO {
