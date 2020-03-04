@@ -78,6 +78,28 @@ fn unpack_clap_number_i64(
         .map_err(|e| InputArgumentsError::from(e))
 }
 
+fn unpack_optional_clap_number_usize(
+    matches: &clap::ArgMatches,
+    parameter_name: &'static str,
+) -> Result<Option<usize>, InputArgumentsError> {
+    
+    match matches.value_of(parameter_name) {
+        None => Ok(None),
+        Some(parameter_value_str) => {
+            usize::from_str(parameter_value_str)
+                .with_context(|_| {
+                    InputArgumentsErrorKind::ArgumentParseError {
+                        argument_name: parameter_name.to_string(),
+                        value: parameter_value_str.to_string(),
+                    }
+                    .into()
+                })
+                .map(|v| Some(v))
+                .map_err(|e| InputArgumentsError::from(e))
+        }
+    }
+}
+
 pub fn get_encoding(opt: Option<&str>) -> &'static Encoding {
     match opt {
         None => UTF_8,
@@ -114,6 +136,8 @@ struct Arguments {
     guess_fps_ratio: bool,
     no_split_mode: bool,
     speed_optimization: Option<f64>,
+
+    audio_index: Option<usize>,
 }
 
 fn parse_args() -> Result<Arguments, InputArgumentsError> {
@@ -189,6 +213,12 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
             .long("disable-fps-guessing")
             .alias("disable-framerate-guessing")
         )
+        .arg(Arg::with_name("audio-index")
+            .help("specifies the audio index in the reference video file")
+            .long("index")
+            .value_name("audio-index")
+            .required(false)
+        )
         .after_help("This program works with .srt, .ass/.ssa, .idx and .sub files. The corrected file will have the same format as the incorrect file.")
         .get_matches();
 
@@ -245,12 +275,14 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
         } else {
             Some(speed_optimization)
         },
+        audio_index: unpack_optional_clap_number_usize(&matches, "audio-index")?
     })
 }
 
 fn prepare_reference_file(args: &Arguments) -> Result<InputFileHandler, failure::Error> {
     let mut ref_file = InputFileHandler::open(
         &args.reference_file_path,
+        args.audio_index,
         args.encoding_ref,
         args.sub_fps_ref,
         ProgressInfo::new(

@@ -251,6 +251,7 @@ impl VideoFileHandler {
 
     pub fn open_video_file(
         file_path: &Path,
+        audio_index: Option<usize>,
         video_decode_progress: impl video_decoder::ProgressHandler,
     ) -> Result<VideoFileHandler, InputVideoError> {
         //video_decoder::VideoDecoder::decode(file_path, );
@@ -291,7 +292,7 @@ impl VideoFileHandler {
 
         let chunk_processor = video_decoder::ChunkedAudioReceiver::new(80, vad_processor);
 
-        let vad_buffer = video_decoder::VideoDecoder::decode(file_path, chunk_processor, video_decode_progress)
+        let vad_buffer = video_decoder::VideoDecoder::decode(file_path, audio_index, chunk_processor, video_decode_progress)
             .with_context(|_| InputVideoErrorKind::FailedToDecode {
                 path: PathBuf::from(file_path),
             })?;
@@ -355,6 +356,7 @@ impl VideoFileHandler {
 impl InputFileHandler {
     pub fn open(
         file_path: &Path,
+        audio_index: Option<usize>,
         sub_encoding: &'static Encoding,
         sub_fps: f64,
         video_decode_progress: impl video_decoder::ProgressHandler,
@@ -371,7 +373,7 @@ impl InputFileHandler {
             }
         }
 
-        return Ok(VideoFileHandler::open_video_file(file_path, video_decode_progress)
+        return Ok(VideoFileHandler::open_video_file(file_path, audio_index, video_decode_progress)
             .map(|v| InputFileHandler::Video(v))
             .with_context(|_| InputFileErrorKind::VideoFile(file_path.to_path_buf()))?);
     }
