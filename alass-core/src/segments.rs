@@ -1688,10 +1688,8 @@ trait PushIterator {
     type Output;
 
     /// False means the called function requests the end of the stream.
-    #[inline]
     fn push(&mut self, item: Self::Item);
 
-    #[inline]
     fn finish(self) -> Self::Output;
 }
 

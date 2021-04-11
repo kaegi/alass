@@ -365,7 +365,7 @@ impl InputFileHandler {
 
         let extension: Option<&OsStr> = file_path.extension();
 
-        for subtitle_ending in known_subitle_endings.into_iter() {
+        for &subtitle_ending in known_subitle_endings.iter() {
             if extension == Some(OsStr::new(subtitle_ending)) {
                 return Ok(SubtitleFileHandler::open_sub_file(file_path, sub_encoding, sub_fps)
                     .map(|v| InputFileHandler::Subtitle(v))

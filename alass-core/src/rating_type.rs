@@ -141,7 +141,7 @@ mod rating_i64 {
     pub type RatingDelta = i64;
     pub type RatingDeltaDelta = i64;
 
-    const RATING_PRECISION: i64 = (1 << 32);
+    const RATING_PRECISION: i64 = 1 << 32;
 
     pub trait RatingExt {
         #[inline]
@@ -173,7 +173,6 @@ mod rating_i64 {
             0
         }
 
-        #[inline]
         fn is_zero(self) -> bool;
 
         #[inline]
@@ -186,10 +185,8 @@ mod rating_i64 {
             r / other
         }
 
-        #[inline]
         fn as_readable_f32(self) -> f32;
 
-        #[inline]
         fn as_readable_f64(self) -> f64;
     }
 
