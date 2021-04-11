@@ -21,7 +21,7 @@ ffmpeg-binary = ["byteorder"]
 [dependencies]
 alass-core = { version = "2.0.0", path = "../alass-core" }
 webrtc-vad = "0.4.0"
-subparse = "0.6.2"
+subparse = "0.7.0"
 
 clap = "2.33.0"
 pbr = "1.0.0-alpha.2"

@@ -31,7 +31,6 @@ use crate::subparse::SubtitleFileInterface;
 use alass_core::{align, TimeDelta as AlgTimeDelta};
 use clap::{App, Arg};
 use encoding_rs::Encoding;
-use encoding_rs::UTF_8;
 use failure::ResultExt;
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -100,16 +99,19 @@ fn unpack_optional_clap_number_usize(
     }
 }
 
-pub fn get_encoding(opt: Option<&str>) -> &'static Encoding {
+pub fn get_encoding(opt: Option<&str>) -> Option<&'static Encoding> {
     match opt {
-        None => UTF_8,
+        None | Some("auto") => {
+            // use automatic detection
+            None
+        },
         Some(label) => {
-            match Encoding::for_label(label.as_bytes()) {
+            match Encoding::for_label_no_replacement(label.as_bytes()) {
                 None => {
-                    panic!("{} is not a known encoding label; exiting.", label);
                     // TODO: error handling
+                    panic!("{} is not a known encoding label; exiting.", label);
                 }
-                Some(encoding) => encoding,
+                Some(encoding) => Some(encoding),
             }
         }
     }
@@ -130,8 +132,10 @@ struct Arguments {
     sub_fps_ref: f64,
 
     allow_negative_timestamps: bool,
-    encoding_ref: &'static Encoding,
-    encoding_inc: &'static Encoding,
+
+    /// having a value of `None` means autodetect encoding
+    encoding_ref: Option<&'static Encoding>,
+    encoding_inc: Option<&'static Encoding>,
 
     guess_fps_ratio: bool,
     no_split_mode: bool,
@@ -182,11 +186,13 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
         .arg(Arg::with_name("encoding-ref")
             .long("encoding-ref")
             .value_name("encoding")
-            .help("Charset encoding of the reference subtitle file."))
+            .help("Charset encoding of the reference subtitle file.")
+            .default_value("auto"))
         .arg(Arg::with_name("encoding-inc")
             .long("encoding-inc")
             .value_name("encoding")
-            .help("Charset encoding of the incorrect subtitle file."))
+            .help("Charset encoding of the incorrect subtitle file.")
+            .default_value("auto"))
         .arg(Arg::with_name("speed-optimization")
             .long("speed-optimization")
             .short("O")

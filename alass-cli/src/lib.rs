@@ -194,7 +194,7 @@ pub struct SubtitleFileHandler {
 impl SubtitleFileHandler {
     pub fn open_sub_file(
         file_path: &Path,
-        sub_encoding: &'static Encoding,
+        sub_encoding: Option<&'static Encoding>,
         sub_fps: f64,
     ) -> Result<SubtitleFileHandler, InputSubtitleError> {
         let sub_data = read_file_to_bytes(file_path.as_ref())
@@ -357,7 +357,7 @@ impl InputFileHandler {
     pub fn open(
         file_path: &Path,
         audio_index: Option<usize>,
-        sub_encoding: &'static Encoding,
+        sub_encoding: Option<&'static Encoding>,
         sub_fps: f64,
         video_decode_progress: impl video_decoder::ProgressHandler,
     ) -> Result<InputFileHandler, InputFileError> {
