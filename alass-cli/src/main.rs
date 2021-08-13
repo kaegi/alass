@@ -152,7 +152,7 @@ fn parse_args() -> Result<Arguments, InputArgumentsError> {
             .help("Path to the reference subtitle or video file")
             .required(true))
         .arg(Arg::with_name("incorrect-sub-file")
-            .help("Path to the incorrect subtitle file")
+            .help("Path to the incorrect subtitle file. Entering \"_\" here creates debug subtitles, which can later be used as a reference file.")
             .required(true))
         .arg(Arg::with_name("output-file-path")
             .help("Path to corrected subtitle file")
