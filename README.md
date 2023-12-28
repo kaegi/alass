@@ -52,11 +52,11 @@ $ alass reference_subtitle.ssa incorrect_subtitle.srt output.srt --split-penalty
 
 Values between 5 and 20 are the most useful. Anything above 20 misses some important splits and anything below 5 introduces many unnecessary splits.
 
-If you only want to shift the subtitle, without introducing splits, you can use `--no-splits`:
+If you only want to shift the subtitle, without introducing splits, you can use `--no-split`:
 
 ```bash
 # synchronizing the subtitles in this mode is very fast
-$ alass movie.mp4 incorrect_subtitle.srt output.srt --no-splits
+$ alass movie.mp4 incorrect_subtitle.srt output.srt --no-split
 ```
 
 Currently supported are `.srt`, `.ssa`/`.ass` and `.idx` files. Every common video format is supported for the reference file.
